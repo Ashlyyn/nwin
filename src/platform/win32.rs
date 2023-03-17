@@ -25,8 +25,11 @@ fn register_class(
     no_close: bool
 ) -> Result<WndClassId, ()> {
     let close = if no_close { CS_NOCLOSE } else { WNDCLASS_STYLES(0) };
-    let menu_name_w = menu_name.encode_utf16().collect::<Vec<_>>();
-    let class_name_w = class_name.encode_utf16().collect::<Vec<_>>();
+    let mut menu_name_w = menu_name.encode_utf16().collect::<Vec<_>>();
+    menu_name_w.push(0x0000);
+    let mut class_name_w = class_name.encode_utf16().collect::<Vec<_>>();
+    class_name_w.push(0x0000);
+
     let wndclass = WNDCLASSEXW { 
         cbSize: size_of::<WNDCLASSEXW>() as u32,
         style: CS_DBLCLKS | close,
@@ -63,8 +66,10 @@ fn create_window(
     menu: Option<HMENU>,
     instance: Option<HINSTANCE>
 ) -> Result<HWND, ()> {
-    let class_name_w = class_name.encode_utf16().collect::<Vec<_>>();
-    let window_name_w = window_name.encode_utf16().collect::<Vec<_>>();
+    let mut class_name_w = class_name.encode_utf16().collect::<Vec<_>>();
+    class_name_w.push(0x0000);
+    let mut window_name_w = window_name.encode_utf16().collect::<Vec<_>>();
+    window_name_w.push(0x0000);
 
     let res = unsafe {
          CreateWindowExW(
@@ -87,6 +92,25 @@ fn create_window(
     } else {
         Ok(res)
     }
+}
+
+#[test]
+fn cw_test() {
+    assert!(
+        create_window(
+            "test_class",
+            "test_window",
+            None,
+            None,
+            0,
+            0,
+            600,
+            400,
+            None,
+            None,
+            get_instance()
+        ).is_ok()
+    );
 }
 
 impl Window {
