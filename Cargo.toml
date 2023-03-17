@@ -1,0 +1,12 @@
+[package]
+name = "nwin"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cfg-if = "1.0.0"
+libc = "0.2.140"
+raw-window-handle = "0.5.1"
+windows = { version = "0.46.0", features = [ "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader" ] }
