@@ -58,6 +58,7 @@ impl BackingStore {
 struct BackingPlanes(u64);
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Default, Debug)]
     struct EventMask: i64 {
         const KEY_PRESS = KeyPressMask as _;
         const KEY_RELEASE = KeyReleaseMask as _;
@@ -87,9 +88,35 @@ bitflags::bitflags! {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
 struct WindowAttributes {
     inner: XSetWindowAttributes,
     mask: u64,
+}
+
+impl Default for WindowAttributes {
+    fn default() -> Self {
+        Self {
+            inner: XSetWindowAttributes { 
+                background_pixmap: 0, 
+                background_pixel: 0, 
+                border_pixmap: CopyFromParent as _, 
+                border_pixel: 0, 
+                bit_gravity: ForgetGravity, 
+                win_gravity: NorthWestGravity, 
+                backing_store: NotUseful, 
+                backing_planes: !0, 
+                backing_pixel: 0, 
+                save_under: x11::xlib::False, 
+                event_mask: 0, 
+                do_not_propagate_mask: 0, 
+                override_redirect: x11::xlib::False, 
+                colormap: CopyFromParent as _, 
+                cursor: 0,
+            },
+            mask: 0,
+        }
+    }
 }
 
 struct WindowAttributesBuilder {
@@ -211,6 +238,7 @@ fn create_window(
     y: i32, 
     width: u32, 
     height: u32, 
+    visible: bool,
     border_width: u32, 
     depth: Option<i32>, 
     class: WindowClass,
@@ -249,7 +277,7 @@ fn create_window(
     }
 
     unsafe { XSelectInput(display, window, event_mask.bits()) };
-    unsafe { XMapWindow(display, window) };
+    if visible { unsafe { XMapWindow(display, window); } };
     let window_name_c = CString::new(window_name).unwrap();
     unsafe { XStoreName(display, window, window_name_c.as_ptr()) };
     Ok((window, display))
@@ -263,7 +291,7 @@ mod tests {
         use super::{create_window, WindowClass, EventMask};
 
         let (_window, display) = create_window(
-            "test window", None, 0, 0, 600, 400, 10, 
+            "test window", None, 0, 0, 600, 400, true, 10, 
             None, WindowClass::InputOutput, 
             None, None, EventMask::all()
         ).unwrap();
@@ -276,5 +304,43 @@ mod tests {
                 _ => { },
            }
         }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Window {
+    name: String,
+    id: x11::xlib::Window,
+    parent: x11::xlib::Window,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    visible: bool,
+    border_width: u32,
+    depth: i32,
+    class: WindowClass,
+    visual: Option<Visual>,
+    attributes: WindowAttributes,
+    event_mask: EventMask,
+}
+
+impl Window {
+    fn create(&self) -> Result<(x11::xlib::Window, *mut x11::xlib::Display), ()> {
+        create_window(
+            &self.name, 
+            Some(self.parent), 
+            self.x, 
+            self.y, 
+            self.width, 
+            self.height, 
+            self.visible,
+            self.border_width, 
+            Some(self.depth), 
+            self.class, 
+            self.visual, 
+            Some(self.attributes), 
+            self.event_mask
+        )
     }
 }
