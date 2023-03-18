@@ -5,13 +5,23 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "nwin"
+
 [dependencies]
+array-init = "2.1.0"
 bitflags = "2.0.1"
 cfg-if = "1.0.0"
+lazy_static = "1.4.0"
 libc = "0.2.140"
 raw-window-handle = "0.5.1"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.46.0", features = [ "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader" ] }
+windows = { version = "0.46.0", features = [ 
+    "Win32_UI_WindowsAndMessaging", 
+    "Win32_Foundation", "Win32_Graphics_Gdi", 
+    "Win32_System_LibraryLoader", 
+    "Win32_UI_Input_KeyboardAndMouse" 
+    ] }
 [target.'cfg(unix)'.dependencies]
 x11 = { version = "2.21.0", features = [ "xlib" ] }
