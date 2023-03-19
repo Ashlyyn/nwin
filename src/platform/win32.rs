@@ -467,13 +467,6 @@ impl super::super::Window for Window {
         WINDOW_INFO.clone().read().unwrap().get(&self.hwnd.0).unwrap().title.clone()
     }
 
-    fn set_title(&mut self, title: &str) {
-        let mut title_w = title.encode_utf16().collect::<Vec<_>>();
-        title_w.push(0x0000);
-
-        unsafe { SetWindowTextW(*self.hwnd, PCWSTR(title_w.as_ptr())); }
-    }
-
     fn fullscreen(&self) -> bool {
         let fullscreen = WINDOW_INFO.clone().read().unwrap().get(&self.hwnd.0).unwrap().fullscreen;
         fullscreen == FullscreenType::Exclusive || fullscreen == FullscreenType::Borderless
@@ -608,6 +601,7 @@ pub trait WindowExtWindows {
     fn style(&self) -> WINDOW_STYLE;
     fn set_style(&mut self, style: WINDOW_STYLE);
     fn set_style_ex(&mut self, style_ex: WINDOW_EX_STYLE);
+    fn set_title(&mut self, title: &str);
 }
 
 impl WindowExtWindows for Window {
@@ -630,6 +624,13 @@ impl WindowExtWindows for Window {
         info.style_ex = style_ex;
         unsafe { SetWindowLongPtrW(*self.hwnd, GWL_EXSTYLE, style_ex.0 as _) };
         unsafe { UpdateWindow(*self.hwnd) };
+    }
+
+    fn set_title(&mut self, title: &str) {
+        let mut title_w = title.encode_utf16().collect::<Vec<_>>();
+        title_w.push(0x0000);
+
+        unsafe { SetWindowTextW(*self.hwnd, PCWSTR(title_w.as_ptr())); }
     }
 }
 
