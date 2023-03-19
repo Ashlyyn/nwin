@@ -2,7 +2,8 @@
 
 use std::{ptr::addr_of_mut, mem::MaybeUninit, ffi::CString, sync::Arc};
 
-use x11::xlib::{XOpenDisplay, XCreateWindow, InputOnly, InputOutput, CopyFromParent, Visual, XSetWindowAttributes, Pixmap, CWBackPixmap, CWBackPixel, CWBorderPixmap, CWBorderPixel, ForgetGravity, StaticGravity, NorthWestGravity, NorthGravity, NorthEastGravity, WestGravity, CenterGravity, EastGravity, SouthWestGravity, SouthGravity, SouthEastGravity, CWBitGravity, CWWinGravity, NotUseful, WhenMapped, Always, CWBackingStore, CWBackingPlanes, CWBackingPixel, CWSaveUnder, CWEventMask, CWDontPropagate, CWOverrideRedirect, Colormap, CWColormap, Cursor, CWCursor, PointerMotionMask, Button1MotionMask, Button2MotionMask, Button3MotionMask, Button4MotionMask, Button5MotionMask, ButtonMotionMask, KeyPressMask, KeyReleaseMask, ButtonPressMask, ButtonReleaseMask, EnterWindowMask, LeaveWindowMask, PointerMotionHintMask, KeymapStateMask, ExposureMask, VisibilityChangeMask, StructureNotifyMask, ResizeRedirectMask, SubstructureNotifyMask, SubstructureRedirectMask, FocusChangeMask, PropertyChangeMask, ColormapChangeMask, OwnerGrabButtonMask, XSelectInput, XMapWindow, XStoreName, XRootWindow, XDefaultScreen, XSetWMNormalHints, XAllocSizeHints, PMinSize, PMaxSize, XUnmapWindow, XIconifyWindow, XClientMessageEvent, ClientMessage, XInternAtom, ClientMessageData, XSendEvent, XDefaultRootWindow, XSetInputFocus, RevertToParent, CurrentTime, XRaiseWindow, XResizeWindow, XDestroyWindow};
+use raw_window_handle::{HasRawWindowHandle, RawWindowHandle, XlibWindowHandle};
+use x11::xlib::{XOpenDisplay, XCreateWindow, InputOnly, InputOutput, CopyFromParent, Visual, XSetWindowAttributes, Pixmap, CWBackPixmap, CWBackPixel, CWBorderPixmap, CWBorderPixel, ForgetGravity, StaticGravity, NorthWestGravity, NorthGravity, NorthEastGravity, WestGravity, CenterGravity, EastGravity, SouthWestGravity, SouthGravity, SouthEastGravity, CWBitGravity, CWWinGravity, NotUseful, WhenMapped, Always, CWBackingStore, CWBackingPlanes, CWBackingPixel, CWSaveUnder, CWEventMask, CWDontPropagate, CWOverrideRedirect, Colormap, CWColormap, Cursor, CWCursor, PointerMotionMask, Button1MotionMask, Button2MotionMask, Button3MotionMask, Button4MotionMask, Button5MotionMask, ButtonMotionMask, KeyPressMask, KeyReleaseMask, ButtonPressMask, ButtonReleaseMask, EnterWindowMask, LeaveWindowMask, PointerMotionHintMask, KeymapStateMask, ExposureMask, VisibilityChangeMask, StructureNotifyMask, ResizeRedirectMask, SubstructureNotifyMask, SubstructureRedirectMask, FocusChangeMask, PropertyChangeMask, ColormapChangeMask, OwnerGrabButtonMask, XSelectInput, XMapWindow, XStoreName, XRootWindow, XDefaultScreen, XSetWMNormalHints, XAllocSizeHints, PMinSize, PMaxSize, XUnmapWindow, XIconifyWindow, XClientMessageEvent, ClientMessage, XInternAtom, ClientMessageData, XSendEvent, XDefaultRootWindow, XSetInputFocus, RevertToParent, CurrentTime, XRaiseWindow, XResizeWindow, XDestroyWindow, XVisualInfo, XMatchVisualInfo};
 
 use crate::{WindowButtons, FullscreenType, WindowId, WindowSizeState, Theme};
 
@@ -244,18 +245,23 @@ fn create_window(
     border_width: u32, 
     depth: Option<i32>, 
     class: WindowClass,
-    mut visual: Option<Visual>,
     attributes: Option<WindowAttributes>,
     event_mask: EventMask,
-) -> Result<(x11::xlib::Window, *mut x11::xlib::Display), ()> {
-    let visual = if let Some(ref mut v) = visual { addr_of_mut!(*v) } else { core::ptr::null_mut() };
-    let mask = if let Some(ref a) = attributes { a.mask } else { 0 };
-    let attributes = if let Some(mut a) = attributes { addr_of_mut!(a.inner) } else { core::ptr::null_mut() };
-
+) -> Result<(x11::xlib::Window, *mut x11::xlib::Display, i32, x11::xlib::VisualID), ()> {
     let display = unsafe { XOpenDisplay(core::ptr::null()) };
     if display.is_null() {
         return Err(());
     }
+
+    let screen = unsafe { XDefaultScreen(display) };
+
+    let mut vinfo: XVisualInfo = unsafe { MaybeUninit::zeroed().assume_init() };
+    assert_ne!(unsafe { XMatchVisualInfo(display, screen, depth.unwrap_or(0), class.as_u32() as _, addr_of_mut!(vinfo)) }, 0);
+    let visual_id = vinfo.visualid;
+    let visual = vinfo.visual;
+
+    let mask = if let Some(ref a) = attributes { a.mask } else { 0 };
+    let attributes = if let Some(mut a) = attributes { addr_of_mut!(a.inner) } else { core::ptr::null_mut() };
 
     let window = unsafe { XCreateWindow(
         display, 
@@ -283,7 +289,7 @@ fn create_window(
     if visible { unsafe { XMapWindow(display, window); } };
     let window_name_c = CString::new(window_name).unwrap();
     unsafe { XStoreName(display, window, window_name_c.as_ptr()) };
-    Ok((window, display))
+    Ok((window, display, screen, visual_id))
 }
 
 mod tests {
@@ -294,10 +300,10 @@ mod tests {
         use super::{create_window, WindowClass, EventMask};
         use x11::xlib::{XDestroyWindow};
 
-        let (id, display) = create_window(
+        let (id, display, _screen, _visual_id) = create_window(
             "test window", None, 0, 0, 600, 400, true, 10, 
             None, WindowClass::InputOutput, 
-            None, None, EventMask::all()
+            None, EventMask::all()
         ).unwrap();
 
         let mut event: XEvent = unsafe { MaybeUninit::zeroed().assume_init() };
@@ -318,7 +324,7 @@ mod tests {
         use super::create_window;
         use x11::xlib::KeyPress;
 
-        let (id, display) = create_window(
+        let (id, display, _screen, _visual_id) = create_window(
             "nwin window", 
             None, 
             0, 
@@ -329,7 +335,6 @@ mod tests {
             10, 
             None, 
             super::WindowClass::InputOutput, 
-            None, 
             None, 
             super::EventMask::all()
         ).unwrap();
@@ -350,7 +355,7 @@ mod tests {
         use std::{mem::MaybeUninit, ptr::addr_of_mut};
         use x11::xlib::{KeyPress, XEvent, XNextEvent};
         use x11::xlib::XClearWindow;
-        use crate::platform::x11::{WindowExtXlib, EventMask};
+        use crate::platform::xlib::{WindowExtXlib, EventMask};
         use x11::xlib::{FocusIn, FocusOut, MapNotify, UnmapNotify, ReparentNotify, ConfigureNotify, ResizeRequest};
         use crate::Window;
 
@@ -405,10 +410,10 @@ mod tests {
 pub(crate) struct Window {
     name: String,
     display: *mut x11::xlib::Display,
-    //screen: *mut x11::xlib::Screen,
-    screen_number: i32,
+    screen: i32,
     id: Arc<x11::xlib::Window>,
     parent: x11::xlib::Window,
+    visual_id: x11::xlib::VisualID,
     x: i32,
     y: i32,
     width: u32,
@@ -438,7 +443,8 @@ impl Default for Window {
             display: core::ptr::null_mut(),
             id: Arc::new(0),
             parent: 0,
-            screen_number: 0,
+            screen: 0,
+            visual_id: 0,
             x: 0,
             y: 0,
             width: 640,
@@ -474,15 +480,16 @@ impl Drop for Window {
 impl Window {
     fn try_new(parent: Option<x11::xlib::Window>, attributes: Option<WindowAttributes>) -> Result<Self, ()> {
         let mut s = Self::default();
-        let (id, display) = s.create(parent, attributes)?;
+        let (id, display, screen, visual_id) = s.create(parent, attributes)?;
         s.id = Arc::new(id);
         s.display = display;
-        s.screen_number = unsafe { XDefaultScreen(display) };
-        s.parent = parent.unwrap_or(unsafe { XRootWindow(display, s.screen_number) });
+        s.screen = screen;
+        s.visual_id = visual_id;
+        s.parent = parent.unwrap_or(unsafe { XRootWindow(display, s.screen) });
         Ok(s)
     }
 
-    fn create(&self, parent: Option<x11::xlib::Window>, attributes: Option<WindowAttributes>) -> Result<(x11::xlib::Window, *mut x11::xlib::Display), ()> {
+    fn create(&self, parent: Option<x11::xlib::Window>, attributes: Option<WindowAttributes>) -> Result<(x11::xlib::Window, *mut x11::xlib::Display, i32, x11::xlib::VisualID), ()> {
         create_window(
             &self.name, 
             parent, 
@@ -493,8 +500,7 @@ impl Window {
             self.visible,
             self.border_width, 
             Some(self.depth), 
-            self.class, 
-            self.visual, 
+            self.class,  
             attributes, 
             self.event_mask
         )
@@ -650,7 +656,7 @@ impl crate::Window for Window {
     }
 
     fn minimize(&mut self) {
-        unsafe { XIconifyWindow(self.display, *self.id, self.screen_number) };
+        unsafe { XIconifyWindow(self.display, *self.id, self.screen) };
         self.size_state = WindowSizeState::Minimized;
     }
 
@@ -749,5 +755,14 @@ impl WindowExtXlib for Window {
     fn set_title(&mut self, title: &str) {
         let title_c = CString::new(title).unwrap();
         unsafe { XStoreName(self.display, *self.id, title_c.as_ptr()) };
+    }
+}
+
+unsafe impl HasRawWindowHandle for Window {
+    fn raw_window_handle(&self) -> RawWindowHandle {
+        let mut handle = XlibWindowHandle::empty();
+        handle.window = *self.id;
+        handle.visual_id = self.visual_id;
+        RawWindowHandle::Xlib(handle)
     }
 }
