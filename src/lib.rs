@@ -6,6 +6,7 @@ use bitflags::bitflags;
 
 pub mod platform;
 
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowId(pub u64);
 
 bitflags! {
@@ -62,7 +63,6 @@ pub trait Window {
     fn set_max_width(&mut self, width: u32);
     fn set_max_height(&mut self, height: u32);
     fn title(&self) -> String;
-    fn set_title(&mut self, title: &str);
     fn visible(&self) -> bool;
     fn hide(&mut self);
     fn show(&mut self);
