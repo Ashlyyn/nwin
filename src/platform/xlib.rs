@@ -355,7 +355,7 @@ mod tests {
         use std::{mem::MaybeUninit, ptr::addr_of_mut};
         use x11::xlib::{KeyPress, XEvent, XNextEvent};
         use x11::xlib::XClearWindow;
-        use crate::platform::x11::{WindowExtXlib, EventMask};
+        use crate::platform::xlib::{WindowExtXlib, EventMask};
         use x11::xlib::{FocusIn, FocusOut, MapNotify, UnmapNotify, ReparentNotify, ConfigureNotify, ResizeRequest};
         use crate::Window;
 
