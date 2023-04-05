@@ -6,7 +6,7 @@ use std::{
     ffi::CString,
     mem::MaybeUninit,
     ptr::addr_of_mut,
-    sync::{Arc, RwLock, atomic::{AtomicU32, AtomicU64}},
+    sync::{Arc, RwLock, atomic::{AtomicU64}},
 };
 
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle, XlibWindowHandle};
