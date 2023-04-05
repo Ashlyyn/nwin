@@ -1,11 +1,41 @@
 #![allow(dead_code, non_upper_case_globals)]
 
-use std::{ptr::addr_of_mut, mem::MaybeUninit, ffi::CString, sync::Arc};
+use core::slice;
+use std::{
+    collections::HashMap,
+    ffi::CString,
+    mem::MaybeUninit,
+    ptr::addr_of_mut,
+    sync::{Arc, RwLock, atomic::{AtomicU32, AtomicU64}},
+};
 
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle, XlibWindowHandle};
-use x11::xlib::{XOpenDisplay, XCreateWindow, InputOnly, InputOutput, CopyFromParent, Visual, XSetWindowAttributes, Pixmap, CWBackPixmap, CWBackPixel, CWBorderPixmap, CWBorderPixel, ForgetGravity, StaticGravity, NorthWestGravity, NorthGravity, NorthEastGravity, WestGravity, CenterGravity, EastGravity, SouthWestGravity, SouthGravity, SouthEastGravity, CWBitGravity, CWWinGravity, NotUseful, WhenMapped, Always, CWBackingStore, CWBackingPlanes, CWBackingPixel, CWSaveUnder, CWEventMask, CWDontPropagate, CWOverrideRedirect, Colormap, CWColormap, Cursor, CWCursor, PointerMotionMask, Button1MotionMask, Button2MotionMask, Button3MotionMask, Button4MotionMask, Button5MotionMask, ButtonMotionMask, KeyPressMask, KeyReleaseMask, ButtonPressMask, ButtonReleaseMask, EnterWindowMask, LeaveWindowMask, PointerMotionHintMask, KeymapStateMask, ExposureMask, VisibilityChangeMask, StructureNotifyMask, ResizeRedirectMask, SubstructureNotifyMask, SubstructureRedirectMask, FocusChangeMask, PropertyChangeMask, ColormapChangeMask, OwnerGrabButtonMask, XSelectInput, XMapWindow, XStoreName, XRootWindow, XDefaultScreen, XSetWMNormalHints, XAllocSizeHints, PMinSize, PMaxSize, XUnmapWindow, XIconifyWindow, XClientMessageEvent, ClientMessage, XInternAtom, ClientMessageData, XSendEvent, XDefaultRootWindow, XSetInputFocus, RevertToParent, CurrentTime, XRaiseWindow, XResizeWindow, XDestroyWindow, XVisualInfo, XMatchVisualInfo};
+use x11::xlib::{
+    Always, Button1, Button1MotionMask, Button2, Button2MotionMask, Button3, Button3MotionMask,
+    Button4, Button4MotionMask, Button5, Button5MotionMask, ButtonMotionMask, ButtonPress,
+    ButtonPressMask, ButtonRelease, ButtonReleaseMask, CWBackPixel, CWBackPixmap, CWBackingPixel,
+    CWBackingPlanes, CWBackingStore, CWBitGravity, CWBorderPixel, CWBorderPixmap, CWColormap,
+    CWCursor, CWDontPropagate, CWEventMask, CWOverrideRedirect, CWSaveUnder, CWWinGravity,
+    CenterGravity, ClientMessage, ClientMessageData, Colormap, ColormapChangeMask, ConfigureNotify,
+    ControlMask, CopyFromParent, CurrentTime, Cursor, DestroyNotify, EastGravity, EnterWindowMask,
+    ExposureMask, FocusChangeMask, FocusIn, FocusOut, ForgetGravity, InputOnly, InputOutput,
+    KeyPress, KeyPressMask, KeyRelease, KeyReleaseMask, KeymapStateMask, LeaveWindowMask, LockMask,
+    Mod1Mask, Mod4Mask, NorthEastGravity, NorthGravity, NorthWestGravity, NotUseful,
+    OwnerGrabButtonMask, PMaxSize, PMinSize, Pixmap, PointerMotionHintMask, PointerMotionMask,
+    PropertyChangeMask, ResizeRedirectMask, RevertToParent, ShiftMask, SouthEastGravity,
+    SouthGravity, SouthWestGravity, StaticGravity, StructureNotifyMask, SubstructureNotifyMask,
+    SubstructureRedirectMask, VisibilityChangeMask, Visual, VisualAllMask, WestGravity, WhenMapped,
+    XAllocSizeHints, XCheckWindowEvent, XClientMessageEvent, XCreateWindow, XDefaultRootWindow,
+    XDefaultScreen, XEvent, XFree, XGetVisualInfo, XIconifyWindow, XInternAtom, XMapWindow,
+    XMatchVisualInfo, XOpenDisplay, XRaiseWindow, XResizeWindow, XRootWindow, XSelectInput,
+    XSendEvent, XSetInputFocus, XSetWMNormalHints, XSetWindowAttributes, XStoreName, XUnmapWindow,
+    XVisualInfo, XDestroyWindow, XCloseDisplay,
+};
 
-use crate::{WindowButtons, FullscreenType, WindowId, WindowSizeState, Theme};
+use crate::{
+    EventSender, FullscreenType, Modifiers, MouseButtons, Theme, WindowButtons, WindowId,
+    WindowIdExt, WindowSizeState, WindowTExt,
+};
 
 #[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq)]
 #[repr(u32)]
@@ -24,7 +54,7 @@ impl WindowClass {
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 #[repr(i32)]
-enum Gravity {
+pub enum Gravity {
     Forget = ForgetGravity,
     Static = StaticGravity,
     NorthWest = NorthWestGravity,
@@ -46,7 +76,7 @@ impl Gravity {
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 #[repr(i32)]
-enum BackingStore {
+pub enum BackingStore {
     NotUseful = NotUseful,
     WhenMapped = WhenMapped,
     Always = Always,
@@ -58,11 +88,11 @@ impl BackingStore {
     }
 }
 
-struct BackingPlanes(u64);
+pub struct BackingPlanes(u64);
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Default, Debug)]
-    struct EventMask: i64 {
+    pub struct EventMask: i64 {
         const KEY_PRESS = KeyPressMask as _;
         const KEY_RELEASE = KeyReleaseMask as _;
         const BUTTON_PRESS = ButtonPressMask as _;
@@ -92,7 +122,7 @@ bitflags::bitflags! {
 }
 
 #[derive(Copy, Clone, Debug)]
-struct WindowAttributes {
+pub struct WindowAttributes {
     inner: XSetWindowAttributes,
     mask: u64,
 }
@@ -100,21 +130,21 @@ struct WindowAttributes {
 impl Default for WindowAttributes {
     fn default() -> Self {
         Self {
-            inner: XSetWindowAttributes { 
-                background_pixmap: 0, 
-                background_pixel: 0, 
-                border_pixmap: CopyFromParent as _, 
-                border_pixel: 0, 
-                bit_gravity: ForgetGravity, 
-                win_gravity: NorthWestGravity, 
-                backing_store: NotUseful, 
-                backing_planes: !0, 
-                backing_pixel: 0, 
-                save_under: x11::xlib::False, 
-                event_mask: 0, 
-                do_not_propagate_mask: 0, 
-                override_redirect: x11::xlib::False, 
-                colormap: CopyFromParent as _, 
+            inner: XSetWindowAttributes {
+                background_pixmap: 0,
+                background_pixel: 0,
+                border_pixmap: CopyFromParent as _,
+                border_pixel: 0,
+                bit_gravity: ForgetGravity,
+                win_gravity: NorthWestGravity,
+                backing_store: NotUseful,
+                backing_planes: !0,
+                backing_pixel: 0,
+                save_under: x11::xlib::False,
+                event_mask: 0,
+                do_not_propagate_mask: 0,
+                override_redirect: x11::xlib::False,
+                colormap: CopyFromParent as _,
                 cursor: 0,
             },
             mask: 0,
@@ -122,19 +152,17 @@ impl Default for WindowAttributes {
     }
 }
 
-struct WindowAttributesBuilder {
+pub struct WindowAttributesBuilder {
     inner: WindowAttributes,
 }
 
 impl WindowAttributesBuilder {
     pub fn new() -> Self {
-        Self { 
-            inner: WindowAttributes { 
-                inner: unsafe {
-                    MaybeUninit::zeroed().assume_init()
-                }, 
-                mask: 0 
-            } 
+        Self {
+            inner: WindowAttributes {
+                inner: unsafe { MaybeUninit::zeroed().assume_init() },
+                mask: 0,
+            },
         }
     }
 
@@ -177,7 +205,7 @@ impl WindowAttributesBuilder {
     pub fn with_backing_store(mut self, backing_store: BackingStore) -> Self {
         self.inner.inner.backing_store = backing_store.as_i32();
         self.inner.mask |= CWBackingStore;
-        self 
+        self
     }
 
     pub fn with_backing_planes(mut self, planes: BackingPlanes) -> Self {
@@ -189,43 +217,43 @@ impl WindowAttributesBuilder {
     pub fn with_backing_pixel(mut self, pixel: u64) -> Self {
         self.inner.inner.backing_pixel = pixel;
         self.inner.mask |= CWBackingPixel;
-        self 
+        self
     }
 
     pub fn with_save_under(mut self, save_under: bool) -> Self {
         self.inner.inner.save_under = save_under as _;
         self.inner.mask |= CWSaveUnder;
-        self 
+        self
     }
 
     pub fn with_event_mask(mut self, mask: EventMask) -> Self {
         self.inner.inner.event_mask = mask.bits();
         self.inner.mask |= CWEventMask;
-        self 
+        self
     }
 
     pub fn with_do_not_propagate_mask(mut self, mask: EventMask) -> Self {
         self.inner.inner.do_not_propagate_mask = mask.bits();
         self.inner.mask |= CWDontPropagate;
-        self 
+        self
     }
 
     pub fn with_override_redirect(mut self, redirect: bool) -> Self {
         self.inner.inner.override_redirect = redirect as _;
         self.inner.mask |= CWOverrideRedirect;
-        self 
+        self
     }
 
     pub fn with_colormap(mut self, colormap: Colormap) -> Self {
         self.inner.inner.colormap = colormap;
         self.inner.mask |= CWColormap;
-        self 
+        self
     }
 
     pub fn with_cursor(mut self, cursor: Cursor) -> Self {
         self.inner.inner.cursor = cursor;
         self.inner.mask |= CWCursor;
-        self 
+        self
     }
 
     pub fn build(self) -> WindowAttributes {
@@ -236,18 +264,26 @@ impl WindowAttributesBuilder {
 #[allow(clippy::too_many_arguments)]
 fn create_window(
     window_name: &str,
-    parent: Option<x11::xlib::Window>, 
-    x: i32, 
-    y: i32, 
-    width: u32, 
-    height: u32, 
+    parent: Option<x11::xlib::Window>,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
     visible: bool,
-    border_width: u32, 
-    depth: Option<i32>, 
+    border_width: u32,
+    depth: Option<i32>,
     class: WindowClass,
     attributes: Option<WindowAttributes>,
     event_mask: EventMask,
-) -> Result<(x11::xlib::Window, *mut x11::xlib::Display, i32, x11::xlib::VisualID), ()> {
+) -> Result<
+    (
+        x11::xlib::Window,
+        *mut x11::xlib::Display,
+        i32,
+        x11::xlib::VisualID,
+    ),
+    (),
+> {
     let display = unsafe { XOpenDisplay(core::ptr::null()) };
     if display.is_null() {
         return Err(());
@@ -256,43 +292,88 @@ fn create_window(
     let screen = unsafe { XDefaultScreen(display) };
 
     let mut vinfo: XVisualInfo = unsafe { MaybeUninit::zeroed().assume_init() };
-    assert_ne!(unsafe { XMatchVisualInfo(display, screen, depth.unwrap_or(0), class.as_u32() as _, addr_of_mut!(vinfo)) }, 0);
-    let visual_id = vinfo.visualid;
-    let visual = vinfo.visual;
+    vinfo.class = class.as_u32() as _;
+    vinfo.screen = screen;
+    vinfo.depth = depth.unwrap_or(0);
+    let (visual, visual_id) = if unsafe {
+        XMatchVisualInfo(
+            display,
+            screen,
+            depth.unwrap_or(0),
+            class.as_u32() as _,
+            addr_of_mut!(vinfo),
+        )
+    } == 0
+    {
+        let mut nitems = 0i32;
+        let p = unsafe {
+            XGetVisualInfo(
+                display,
+                VisualAllMask,
+                addr_of_mut!(vinfo),
+                addr_of_mut!(nitems),
+            )
+        };
+        let ret = if nitems == 0 {
+            (core::ptr::null_mut(), 0)
+        } else {
+            let vi = unsafe { slice::from_raw_parts(p, nitems as _) };
+            (vi[0].visual, vi[0].visualid)
+        };
+        unsafe { XFree(p.cast()) };
+        ret
+    } else {
+        (vinfo.visual, vinfo.visualid)
+    };
 
-    let mask = if let Some(ref a) = attributes { a.mask } else { 0 };
-    let attributes = if let Some(mut a) = attributes { addr_of_mut!(a.inner) } else { core::ptr::null_mut() };
+    let mask = if let Some(ref a) = attributes {
+        a.mask
+    } else {
+        0
+    };
+    let attributes = if let Some(mut a) = attributes {
+        addr_of_mut!(a.inner)
+    } else {
+        core::ptr::null_mut()
+    };
 
-    let window = unsafe { XCreateWindow(
-        display, 
-        parent.unwrap_or_else(|| {
-            XRootWindow(display,  XDefaultScreen(display))
-        }), 
-        x, 
-        y, 
-        width, 
-        height, 
-        border_width, 
-        depth.unwrap_or(CopyFromParent as _), 
-        class.as_u32(), 
-        visual, 
-        mask, 
-        attributes,
-    ) };
+    let window = unsafe {
+        XCreateWindow(
+            display,
+            parent.unwrap_or_else(|| XRootWindow(display, XDefaultScreen(display))),
+            x,
+            y,
+            width,
+            height,
+            border_width,
+            depth.unwrap_or(CopyFromParent as _),
+            class.as_u32(),
+            visual,
+            mask,
+            attributes,
+        )
+    };
     assert_ne!(window, 0);
 
     if window < 16 {
-        return Err(())
+        return Err(());
     }
 
     unsafe { XSelectInput(display, window, event_mask.bits()) };
-    if visible { unsafe { XMapWindow(display, window); } };
+    if visible {
+        unsafe {
+            XMapWindow(display, window);
+        }
+    };
     let window_name_c = CString::new(window_name).unwrap();
     unsafe { XStoreName(display, window, window_name_c.as_ptr()) };
     Ok((window, display, screen, visual_id))
 }
 
 mod tests {
+    /*
+    use crate::WindowT;
+
     //#[test]
     fn cw_test() {
         use std::{mem::MaybeUninit, ptr::addr_of_mut};
@@ -301,8 +382,8 @@ mod tests {
         use x11::xlib::{XDestroyWindow};
 
         let (id, display, _screen, _visual_id) = create_window(
-            "test window", None, 0, 0, 600, 400, true, 10, 
-            None, WindowClass::InputOutput, 
+            "test window", None, 0, 0, 600, 400, true, 10,
+            None, WindowClass::InputOutput,
             None, EventMask::all()
         ).unwrap();
 
@@ -325,17 +406,17 @@ mod tests {
         use x11::xlib::KeyPress;
 
         let (id, display, _screen, _visual_id) = create_window(
-            "nwin window", 
-            None, 
-            0, 
-            0, 
-            640, 
-            480, 
-            true, 
-            10, 
-            None, 
-            super::WindowClass::InputOutput, 
-            None, 
+            "nwin window",
+            None,
+            0,
+            0,
+            640,
+            480,
+            true,
+            10,
+            None,
+            super::WindowClass::InputOutput,
+            None,
             super::EventMask::all()
         ).unwrap();
 
@@ -357,7 +438,6 @@ mod tests {
         use x11::xlib::XClearWindow;
         use crate::platform::xlib::{WindowExtXlib, EventMask};
         use x11::xlib::{FocusIn, FocusOut, MapNotify, UnmapNotify, ReparentNotify, ConfigureNotify, ResizeRequest};
-        use crate::Window;
 
         let mut window = super::Window::try_new(None, None).unwrap();
         assert_ne!(window.id().0, 0);
@@ -401,19 +481,24 @@ mod tests {
                     KeyPress => break,
                     _ => { }
                }
-            } 
+            }
         }
     }
+    */
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Window {
+    id: Arc<x11::xlib::Window>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Window {
-    name: String,
+pub(crate) struct WindowInfo {
     display: *mut x11::xlib::Display,
-    screen: i32,
-    id: Arc<x11::xlib::Window>,
-    parent: x11::xlib::Window,
     visual_id: x11::xlib::VisualID,
+    name: String,
+    screen: i32,
+    parent: x11::xlib::Window,
     x: i32,
     y: i32,
     width: u32,
@@ -434,17 +519,25 @@ pub(crate) struct Window {
     size_state: WindowSizeState,
     resizeable: bool,
     theme: Theme,
+    modifiers: Modifiers,
+    sender: Arc<RwLock<EventSender>>,
 }
 
-impl Default for Window {
+unsafe impl Send for WindowInfo {}
+unsafe impl Sync for WindowInfo {}
+
+lazy_static::lazy_static! {
+    static ref WINDOW_INFO: Arc<RwLock<HashMap<x11::xlib::XID, WindowInfo>>> = Arc::new(RwLock::new(HashMap::new()));
+}
+
+impl Default for WindowInfo {
     fn default() -> Self {
         Self {
-            name: "nwin window".to_owned(),
             display: core::ptr::null_mut(),
-            id: Arc::new(0),
+            visual_id: 0,
+            name: "nwin window".to_owned(),
             parent: 0,
             screen: 0,
-            visual_id: 0,
             x: 0,
             y: 0,
             width: 640,
@@ -458,13 +551,15 @@ impl Default for Window {
             depth: CopyFromParent as _,
             class: WindowClass::InputOutput,
             visual: None,
-            event_mask: EventMask::empty(),
+            event_mask: EventMask::all(),
             enabled_buttons: WindowButtons::all(),
             focused: false,
             fullscreen: FullscreenType::NotFullscreen,
             size_state: WindowSizeState::Other,
             resizeable: false,
             theme: Theme::Light,
+            modifiers: Modifiers::empty(),
+            sender: Arc::new(RwLock::new(EventSender::new())),
         }
     }
 }
@@ -472,44 +567,72 @@ impl Default for Window {
 impl Drop for Window {
     fn drop(&mut self) {
         if Arc::strong_count(&self.id) <= 1 {
-            unsafe { XDestroyWindow(self.display, *self.id) };
+            WINDOW_INFO.clone().write().unwrap().remove(&*self.id);
+            //unsafe { XDestroyWindow(w.display, *self.id) };
         }
     }
 }
 
 impl Window {
-    fn try_new(parent: Option<x11::xlib::Window>, attributes: Option<WindowAttributes>) -> Result<Self, ()> {
-        let mut s = Self::default();
-        let (id, display, screen, visual_id) = s.create(parent, attributes)?;
-        s.id = Arc::new(id);
-        s.display = display;
-        s.screen = screen;
-        s.visual_id = visual_id;
-        s.parent = parent.unwrap_or(unsafe { XRootWindow(display, s.screen) });
-        Ok(s)
+    pub fn try_new(
+        parent: Option<x11::xlib::Window>,
+        attributes: Option<WindowAttributes>,
+    ) -> Result<Self, ()> {
+        let mut w = Self::default();
+        let mut info = WindowInfo::default();
+        let (id, display, screen, visual_id) = w.create(parent, attributes, &info)?;
+        w.id = Arc::new(id);
+        info.display = display;
+        info.screen = screen;
+        info.visual_id = visual_id;
+        info.parent = parent.unwrap_or(unsafe { XRootWindow(display, info.screen) });
+        WINDOW_INFO.clone().write().unwrap().insert(id, info);
+        let wm_delete_window_s = CString::new("WM_DELETE_WINDOW").unwrap();
+        let wm_delete_window = unsafe { XInternAtom(display, wm_delete_window_s.as_ptr(), x11::xlib::True) };
+        WM_DELETE_WINDOW.store(wm_delete_window, std::sync::atomic::Ordering::Relaxed);
+        Ok(w)
     }
 
-    fn create(&self, parent: Option<x11::xlib::Window>, attributes: Option<WindowAttributes>) -> Result<(x11::xlib::Window, *mut x11::xlib::Display, i32, x11::xlib::VisualID), ()> {
+    fn create(
+        &self,
+        parent: Option<x11::xlib::Window>,
+        attributes: Option<WindowAttributes>,
+        w: &WindowInfo,
+    ) -> Result<
+        (
+            x11::xlib::Window,
+            *mut x11::xlib::Display,
+            i32,
+            x11::xlib::VisualID,
+        ),
+        (),
+    > {
         create_window(
-            &self.name, 
-            parent, 
-            self.x, 
-            self.y, 
-            self.width, 
-            self.height, 
-            self.visible,
-            self.border_width, 
-            Some(self.depth), 
-            self.class,  
-            attributes, 
-            self.event_mask
+            &w.name,
+            parent,
+            w.x,
+            w.y,
+            w.width,
+            w.height,
+            w.visible,
+            w.border_width,
+            Some(w.depth),
+            w.class,
+            attributes,
+            w.event_mask,
         )
     }
 }
 
-impl crate::Window for Window {
+impl crate::WindowT for Window {
     fn enabled_buttons(&self) -> crate::WindowButtons {
-        self.enabled_buttons
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .enabled_buttons
     }
 
     fn set_enabled_buttons(&mut self, buttons: WindowButtons) {
@@ -518,11 +641,11 @@ impl crate::Window for Window {
         let maximize_horz_s = CString::new("_NET_WM_ACTION_MAXIMIZE_HORZ").unwrap();
         let maximize_vert_s = CString::new("_NET_WM_ACTION_MAXIMIZE_VERT").unwrap();
 
-        let allowed_actions = unsafe { XInternAtom(self.display, allowed_actions_s.as_ptr(), x11::xlib::False) };
-        let maximize_horz = unsafe { XInternAtom(self.display, maximize_horz_s.as_ptr(), x11::xlib::False) };
-        let maximize_vert = unsafe { XInternAtom(self.display, maximize_vert_s.as_ptr(), x11::xlib::False) };
+        let allowed_actions = unsafe { XInternAtom(w.display, allowed_actions_s.as_ptr(), x11::xlib::False) };
+        let maximize_horz = unsafe { XInternAtom(w.display, maximize_horz_s.as_ptr(), x11::xlib::False) };
+        let maximize_vert = unsafe { XInternAtom(w.display, maximize_vert_s.as_ptr(), x11::xlib::False) };
 
-        unsafe { XChangeProperty(self.display, *self.id, allowed_actions, XA_ATOM, 32, PropModeAppend, addr_of_mut!(maximize_horz) as _, 1) }
+        unsafe { XChangeProperty(w.display, *self.id, allowed_actions, XA_ATOM, 32, PropModeAppend, addr_of_mut!(maximize_horz) as _, 1) }
         */
         if buttons != WindowButtons::all() {
             todo!()
@@ -530,35 +653,83 @@ impl crate::Window for Window {
     }
 
     fn focus(&mut self) {
-        self.focused = true;
-        unsafe { XSetInputFocus(self.display, *self.id, RevertToParent, CurrentTime) };
-        unsafe { XRaiseWindow(self.display, *self.id) };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                w.focused = true;
+                unsafe { XSetInputFocus(w.display, *self.id, RevertToParent, CurrentTime) };
+                unsafe { XRaiseWindow(w.display, *self.id) };
+            })
+            .or_insert(WindowInfo::default());
     }
-    
+
     fn focused(&self) -> bool {
-        self.focused
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .focused
     }
 
     fn fullscreen_type(&self) -> FullscreenType {
-        self.fullscreen
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .fullscreen
     }
 
     fn width(&self) -> u32 {
-        self.width
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .width
     }
 
     fn set_width(&mut self, width: u32) {
-        self.width = width;
-        unsafe { XResizeWindow(self.display, *self.id, self.width, self.height) };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                w.width = width;
+                unsafe { XResizeWindow(w.display, *self.id, w.width, w.height) };
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn height(&self) -> u32 {
-        self.height
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .height
     }
 
     fn set_height(&mut self, height: u32) {
-        self.height = height;
-        unsafe { XResizeWindow(self.display, *self.id, self.width, self.height) };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                w.height = height;
+                unsafe { XResizeWindow(w.display, *self.id, w.width, w.height) };
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn id(&self) -> WindowId {
@@ -566,63 +737,126 @@ impl crate::Window for Window {
     }
 
     fn min_width(&self) -> u32 {
-        self.min_width
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .min_width
     }
 
     fn set_min_width(&mut self, width: u32) {
-        self.min_width = width;
-        let size_hints = &mut unsafe { *XAllocSizeHints() };
-        size_hints.min_width = self.min_width as _;
-        size_hints.min_height = self.min_height as _;
-        size_hints.flags = PMinSize;
-        unsafe { XSetWMNormalHints(self.display, *self.id, addr_of_mut!(*size_hints)) };
-        unsafe { libc::free(addr_of_mut!(*size_hints) as _) };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                w.min_width = width;
+                let size_hints = &mut unsafe { *XAllocSizeHints() };
+                size_hints.min_width = w.min_width as _;
+                size_hints.min_height = w.min_height as _;
+                size_hints.flags = PMinSize;
+                unsafe { XSetWMNormalHints(w.display, *self.id, addr_of_mut!(*size_hints)) };
+                unsafe { XFree(addr_of_mut!(*size_hints) as _) };
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn min_height(&self) -> u32 {
-        self.min_height
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .min_height
     }
 
     fn set_min_height(&mut self, height: u32) {
-        self.min_height = height;
-        let size_hints = &mut unsafe { *XAllocSizeHints() };
-        size_hints.min_width = self.min_width as _;
-        size_hints.min_height = self.min_height as _;
-        size_hints.flags = PMinSize;
-        unsafe { XSetWMNormalHints(self.display, *self.id, addr_of_mut!(*size_hints)) };
-        unsafe { libc::free(addr_of_mut!(*size_hints) as _) };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                w.min_height = height;
+                let size_hints = &mut unsafe { *XAllocSizeHints() };
+                size_hints.min_width = w.min_width as _;
+                size_hints.min_height = w.min_height as _;
+                size_hints.flags = PMinSize;
+                unsafe { XSetWMNormalHints(w.display, *self.id, addr_of_mut!(*size_hints)) };
+                unsafe { XFree(addr_of_mut!(*size_hints) as _) };
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn max_width(&self) -> u32 {
-        self.max_width
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .max_width
     }
 
     fn set_max_width(&mut self, width: u32) {
-        self.max_width = width;
-        let size_hints = &mut unsafe { *XAllocSizeHints() };
-        size_hints.max_width = self.max_width as _;
-        size_hints.max_height = self.max_height as _;
-        size_hints.flags = PMaxSize;
-        unsafe { XSetWMNormalHints(self.display, *self.id, addr_of_mut!(*size_hints)) };
-        unsafe { libc::free(addr_of_mut!(*size_hints) as _) };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                w.max_width = width;
+                let size_hints = &mut unsafe { *XAllocSizeHints() };
+                size_hints.min_width = w.min_width as _;
+                size_hints.min_height = w.min_height as _;
+                size_hints.flags = PMinSize;
+                unsafe { XSetWMNormalHints(w.display, *self.id, addr_of_mut!(*size_hints)) };
+                unsafe { XFree(addr_of_mut!(*size_hints) as _) };
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn max_height(&self) -> u32 {
-        self.max_height
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .max_height
     }
 
     fn set_max_height(&mut self, height: u32) {
-        self.max_height = height;
-        let size_hints = &mut unsafe { *XAllocSizeHints() };
-        size_hints.max_width = self.max_width as _;
-        size_hints.max_height = self.max_height as _;
-        size_hints.flags = PMaxSize;
-        unsafe { XSetWMNormalHints(self.display, *self.id, addr_of_mut!(*size_hints)) };
-        unsafe { libc::free(addr_of_mut!(*size_hints) as _) };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                w.max_height = height;
+                let size_hints = &mut unsafe { *XAllocSizeHints() };
+                size_hints.min_width = w.min_width as _;
+                size_hints.min_height = w.min_height as _;
+                size_hints.flags = PMinSize;
+                unsafe { XSetWMNormalHints(w.display, *self.id, addr_of_mut!(*size_hints)) };
+                unsafe { XFree(addr_of_mut!(*size_hints) as _) };
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn maximized(&self) -> bool {
-        self.size_state == WindowSizeState::Maximized
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .size_state
+            == WindowSizeState::Maximized
     }
 
     fn maximize(&mut self) {
@@ -631,37 +865,84 @@ impl crate::Window for Window {
         let wm_state_s = CString::new("_NET_WM_STATE").unwrap();
         let max_width_s = CString::new("_NET_WM_STATE_MAXIMIZED_HORZ").unwrap();
         let max_height_s = CString::new("_NET_WM_STATE_MAXIMIZED_VERT").unwrap();
-        
-        let wm_state = unsafe { XInternAtom(self.display, wm_state_s.as_ptr(), x11::xlib::False) };
-        let max_width = unsafe { XInternAtom(self.display, max_width_s.as_ptr(), x11::xlib::False) };
-        let max_height = unsafe { XInternAtom(self.display, max_height_s.as_ptr(), x11::xlib::False) };
 
-        let mut ev = XClientMessageEvent {
-            type_: ClientMessage,
-            format: 32,
-            window: *self.id,
-            message_type: wm_state,
-            data: ClientMessageData::from([ NET_WM_TOGGLE_STATE, max_width as _, max_height as _, 1, 0 ]),
-            serial: 0,
-            send_event: 0,
-            display: self.display
-        };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                let wm_state =
+                    unsafe { XInternAtom(w.display, wm_state_s.as_ptr(), x11::xlib::False) };
+                let max_width =
+                    unsafe { XInternAtom(w.display, max_width_s.as_ptr(), x11::xlib::False) };
+                let max_height =
+                    unsafe { XInternAtom(w.display, max_height_s.as_ptr(), x11::xlib::False) };
 
-        unsafe { XSendEvent(self.display, XDefaultRootWindow(self.display), x11::xlib::False, SubstructureNotifyMask, addr_of_mut!(ev) as _) };
-        self.size_state = WindowSizeState::Maximized;
+                let mut ev = XClientMessageEvent {
+                    type_: ClientMessage,
+                    format: 32,
+                    window: *self.id,
+                    message_type: wm_state,
+                    data: ClientMessageData::from([
+                        NET_WM_TOGGLE_STATE,
+                        max_width as _,
+                        max_height as _,
+                        1,
+                        0,
+                    ]),
+                    serial: 0,
+                    send_event: 0,
+                    display: w.display,
+                };
+
+                unsafe {
+                    XSendEvent(
+                        w.display,
+                        XDefaultRootWindow(w.display),
+                        x11::xlib::False,
+                        SubstructureNotifyMask,
+                        addr_of_mut!(ev) as _,
+                    )
+                };
+                w.size_state = WindowSizeState::Maximized;
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn minimized(&self) -> bool {
-        self.size_state == WindowSizeState::Minimized
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .size_state
+            == WindowSizeState::Minimized
     }
 
     fn minimize(&mut self) {
-        unsafe { XIconifyWindow(self.display, *self.id, self.screen) };
-        self.size_state = WindowSizeState::Minimized;
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                unsafe { XIconifyWindow(w.display, *self.id, w.screen) };
+                w.size_state = WindowSizeState::Minimized;
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn normalized(&self) -> bool {
-        self.size_state == WindowSizeState::Other
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .size_state
+            == WindowSizeState::Other
     }
 
     // TODO - implement better
@@ -673,54 +954,123 @@ impl crate::Window for Window {
             self.maximize();
         }
 
-        self.size_state = WindowSizeState::Other;
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                w.size_state = WindowSizeState::Other;
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn resizeable(&self) -> bool {
-        self.resizeable
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .resizeable
     }
 
     fn set_resizeable(&mut self, resizeable: bool) {
-        self.resizeable = resizeable;
-        let size_hints = &mut unsafe { *XAllocSizeHints() };
-        if resizeable == false {
-            size_hints.min_width = self.width as _;
-            size_hints.max_width = self.width as _;
-            size_hints.min_height = self.height as _;
-            size_hints.max_height = self.height as _;
-        } else {
-            size_hints.min_width = self.min_width as _;
-            size_hints.max_width = self.max_width as _;
-            size_hints.min_height = self.min_height as _;
-            size_hints.max_height = self.min_height as _;
-        }
-        size_hints.flags = PMinSize | PMaxSize;
-        unsafe { XSetWMNormalHints(self.display, *self.id, addr_of_mut!(*size_hints)) };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                w.resizeable = resizeable;
+                let size_hints = &mut unsafe { *XAllocSizeHints() };
+                if resizeable == false {
+                    size_hints.min_width = w.width as _;
+                    size_hints.max_width = w.width as _;
+                    size_hints.min_height = w.height as _;
+                    size_hints.max_height = w.height as _;
+                } else {
+                    size_hints.min_width = w.min_width as _;
+                    size_hints.max_width = w.max_width as _;
+                    size_hints.min_height = w.min_height as _;
+                    size_hints.max_height = w.min_height as _;
+                }
+                size_hints.flags = PMinSize | PMaxSize;
+                unsafe { XSetWMNormalHints(w.display, *self.id, addr_of_mut!(*size_hints)) };
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn theme(&self) -> Theme {
-        self.theme
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .theme
     }
 
     fn set_theme(&mut self, theme: Theme) {
-        self.theme = theme;
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .get_mut(&*self.id)
+            .unwrap()
+            .theme = theme;
         todo!()
     }
 
     fn title(&self) -> String {
-        self.name.clone()
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .name
+            .clone()
     }
 
     fn visible(&self) -> bool {
-        self.visible
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .visible
     }
 
     fn hide(&mut self) {
-        unsafe { XUnmapWindow(self.display, *self.id) };
+        unsafe {
+            XUnmapWindow(
+                WINDOW_INFO
+                    .clone()
+                    .read()
+                    .unwrap()
+                    .get(&*self.id)
+                    .unwrap()
+                    .display,
+                *self.id,
+            )
+        };
     }
 
     fn show(&mut self) {
-        unsafe { XMapWindow(self.display, *self.id) };
+        unsafe {
+            XMapWindow(
+                WINDOW_INFO
+                    .clone()
+                    .read()
+                    .unwrap()
+                    .get(&*self.id)
+                    .unwrap()
+                    .display,
+                *self.id,
+            )
+        };
     }
 
     fn request_redraw(&mut self) {
@@ -744,17 +1094,56 @@ trait WindowExtXlib {
 
 impl WindowExtXlib for Window {
     fn event_mask(&self) -> EventMask {
-        self.event_mask
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .event_mask
     }
 
     fn set_event_mask(&mut self, event_mask: EventMask) {
-        self.event_mask = event_mask;
-        unsafe { XSelectInput(self.display, *self.id, event_mask.bits()) };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(*self.id)
+            .and_modify(|w| {
+                w.event_mask = event_mask;
+                unsafe { XSelectInput(w.display, *self.id, event_mask.bits()) };
+            })
+            .or_insert(WindowInfo::default());
     }
 
     fn set_title(&mut self, title: &str) {
         let title_c = CString::new(title).unwrap();
-        unsafe { XStoreName(self.display, *self.id, title_c.as_ptr()) };
+        unsafe {
+            XStoreName(
+                WINDOW_INFO
+                    .clone()
+                    .read()
+                    .unwrap()
+                    .get(&*self.id)
+                    .unwrap()
+                    .display,
+                *self.id,
+                title_c.as_ptr(),
+            )
+        };
+    }
+}
+
+impl WindowTExt for Window {
+    fn sender(&self) -> Arc<RwLock<EventSender>> {
+        WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .sender
+            .clone()
     }
 }
 
@@ -762,7 +1151,191 @@ unsafe impl HasRawWindowHandle for Window {
     fn raw_window_handle(&self) -> RawWindowHandle {
         let mut handle = XlibWindowHandle::empty();
         handle.window = *self.id;
-        handle.visual_id = self.visual_id;
+        handle.visual_id = WINDOW_INFO
+            .clone()
+            .read()
+            .unwrap()
+            .get(&*self.id)
+            .unwrap()
+            .visual_id;
         RawWindowHandle::Xlib(handle)
+    }
+}
+
+static WM_DELETE_WINDOW: AtomicU64 = AtomicU64::new(0);
+
+impl WindowIdExt for WindowId {
+    fn next_event(&self) {
+        let mut ev: XEvent = unsafe { MaybeUninit::zeroed().assume_init() };
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry(self.0)
+            .and_modify(|w| {
+                if unsafe {
+                    XCheckWindowEvent(
+                        w.display,
+                        self.0 as _,
+                        w.event_mask.bits(),
+                        addr_of_mut!(ev),
+                    )
+                } == x11::xlib::False
+                {
+                    return;
+                }
+
+                match unsafe { ev.type_ } {
+                    DestroyNotify => {
+                        w.sender
+                            .write()
+                            .unwrap()
+                            .send(WindowId(self.0), crate::WindowEvent::CloseRequested);
+                        w.sender
+                            .write()
+                            .unwrap()
+                            .send(WindowId(self.0), crate::WindowEvent::Destroyed);
+                    }
+                    ConfigureNotify => {
+                        let cfg = unsafe { ev.configure };
+                        if cfg.x != w.x || cfg.y != w.y {
+                            w.x = cfg.x;
+                            w.y = cfg.y;
+                            w.sender.write().unwrap().send(
+                                WindowId(self.0),
+                                crate::WindowEvent::Moved(w.x as _, w.y as _),
+                            );
+                        } else if cfg.width != w.width as _ || cfg.height != w.height as _ {
+                            w.width = cfg.width as _;
+                            w.height = cfg.height as _;
+                            w.sender.write().unwrap().send(
+                                WindowId(self.0),
+                                crate::WindowEvent::Resized(w.width, w.height),
+                            );
+                        }
+                    }
+                    KeyPress => {
+                        let kp = unsafe { ev.key };
+                        w.sender.write().unwrap().send(
+                            WindowId(self.0),
+                            crate::WindowEvent::KeyDown(crate::KeyboardInput {
+                                key_code: kp.keycode as _,
+                            }),
+                        );
+
+                        let modifiers =
+                            kp.state & (ShiftMask | ControlMask | Mod1Mask | Mod4Mask | LockMask);
+                        let mut m = Modifiers::empty();
+                        if modifiers & ShiftMask != 0 {
+                            m |= Modifiers::LSHIFT;
+                        }
+                        if modifiers & ControlMask != 0 {
+                            m |= Modifiers::LCTRL;
+                        }
+                        if modifiers & Mod1Mask != 0 {
+                            m |= Modifiers::LALT;
+                        }
+                        if modifiers & Mod4Mask != 0 {
+                            m |= Modifiers::LSYS;
+                        }
+                        if modifiers & LockMask != 0 {
+                            m |= Modifiers::CAPSLOCK;
+                        }
+                        if m.contains(w.modifiers) {
+                            w.modifiers = m;
+                            w.sender
+                                .write()
+                                .unwrap()
+                                .send(WindowId(self.0), crate::WindowEvent::ModifiersChanged(m));
+                        }
+                    }
+                    KeyRelease => {
+                        let kr = unsafe { ev.key };
+                        w.sender.write().unwrap().send(
+                            WindowId(self.0),
+                            crate::WindowEvent::KeyDown(crate::KeyboardInput {
+                                key_code: kr.keycode as _,
+                            }),
+                        );
+
+                        let modifiers =
+                            kr.state & (ShiftMask | ControlMask | Mod1Mask | Mod4Mask | LockMask);
+                        let mut m = Modifiers::empty();
+                        if modifiers & ShiftMask != 0 {
+                            m |= Modifiers::LSHIFT;
+                        }
+                        if modifiers & ControlMask != 0 {
+                            m |= Modifiers::LCTRL;
+                        }
+                        if modifiers & Mod1Mask != 0 {
+                            m |= Modifiers::LALT;
+                        }
+                        if modifiers & Mod4Mask != 0 {
+                            m |= Modifiers::LSYS;
+                        }
+                        if modifiers & LockMask != 0 {
+                            m |= Modifiers::CAPSLOCK;
+                        }
+                        if m.contains(w.modifiers) {
+                            w.modifiers = m;
+                            w.sender
+                                .write()
+                                .unwrap()
+                                .send(WindowId(self.0), crate::WindowEvent::ModifiersChanged(m));
+                        }
+                    }
+                    ButtonPress => {
+                        let bp = unsafe { ev.button };
+                        let button = match bp.button {
+                            Button1 => MouseButtons::LCLICK,
+                            Button2 => MouseButtons::RCLICK,
+                            Button3 => MouseButtons::MCLICK,
+                            Button4 => MouseButtons::BUTTON_4,
+                            Button5 => MouseButtons::BUTTON_5,
+                            _ => panic!(),
+                        };
+                        w.sender.write().unwrap().send(
+                            WindowId(self.0),
+                            crate::WindowEvent::MouseButtonDown(button),
+                        );
+                    }
+                    ButtonRelease => {
+                        let bp = unsafe { ev.button };
+                        let button = match bp.button {
+                            Button1 => MouseButtons::LCLICK,
+                            Button2 => MouseButtons::RCLICK,
+                            Button3 => MouseButtons::MCLICK,
+                            Button4 => MouseButtons::BUTTON_4,
+                            Button5 => MouseButtons::BUTTON_5,
+                            _ => panic!(),
+                        };
+                        w.sender
+                            .write()
+                            .unwrap()
+                            .send(WindowId(self.0), crate::WindowEvent::MouseButtonUp(button));
+                    }
+                    FocusIn => {
+                        w.sender
+                            .write()
+                            .unwrap()
+                            .send(WindowId(self.0), crate::WindowEvent::Focused(true));
+                    }
+                    FocusOut => {
+                        w.sender
+                            .write()
+                            .unwrap()
+                            .send(WindowId(self.0), crate::WindowEvent::Focused(false));
+                    },
+                    ClientMessage => {
+                        let cm = unsafe { ev.client_message };
+                        if cm.data.as_longs()[0] == WM_DELETE_WINDOW.load(std::sync::atomic::Ordering::Relaxed) as _ {
+                            unsafe { XDestroyWindow(w.display, self.0) };
+                            unsafe { XCloseDisplay(w.display) };
+                        }
+                    }
+                    _ => {}
+                }
+            })
+            .or_insert(WindowInfo::default());
     }
 }

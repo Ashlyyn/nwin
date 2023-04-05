@@ -1,9 +1,12 @@
 #![allow(clippy::bool_comparison, dead_code)]
 
-use std::{marker::PhantomData, collections::{VecDeque, HashSet}, sync::{Arc, RwLock}};
+use std::{
+    collections::{HashSet, VecDeque},
+    marker::PhantomData,
+    sync::{Arc, RwLock},
+};
 
 use bitflags::bitflags;
-use platform::{win32};
 
 pub mod platform;
 
@@ -79,7 +82,8 @@ pub trait WindowT {
     fn normalize(&mut self);
     fn fullscreen_type(&self) -> FullscreenType;
     fn fullscreen(&self) -> bool {
-        self.fullscreen_type() == FullscreenType::Borderless || self.fullscreen_type() == FullscreenType::Exclusive
+        self.fullscreen_type() == FullscreenType::Borderless
+            || self.fullscreen_type() == FullscreenType::Exclusive
     }
     fn set_fullscreen(&mut self, fullscreen: FullscreenType);
     fn focus(&mut self);
@@ -98,12 +102,13 @@ pub(crate) trait WindowIdExt {
 }
 
 pub enum Window {
-    WindowsWindow(win32::Window),
+    //WindowsWindow(win32::Window),
 }
 
-
 #[derive(Copy, Clone, Default, Debug)]
-pub struct KeyboardInput;
+pub struct KeyboardInput {
+    key_code: u64,
+}
 
 bitflags! {
     #[derive(Copy, Clone, Debug)]
@@ -142,16 +147,18 @@ pub enum WindowEvent {
     Destroyed,
     Focused(bool),
     ThemeChanged(Theme),
-    KeyboardInput(KeyboardInput),
+    KeyDown(KeyboardInput),
+    KeyUp(KeyboardInput),
     CursorMoved(f64, f64),
-    MouseInput(MouseButtons),
+    MouseButtonDown(MouseButtons),
+    MouseButtonUp(MouseButtons),
     ModifiersChanged(Modifiers),
     UnrecoverableError,
 }
 
 #[derive(Clone, Debug)]
 pub struct EventSender {
-    receiver: Option<Arc<RwLock<EventReceiver>>>
+    receiver: Option<Arc<RwLock<EventReceiver>>>,
 }
 
 impl EventSender {
@@ -160,7 +167,9 @@ impl EventSender {
     }
 
     pub(crate) fn with_receiver(receiver: Arc<RwLock<EventReceiver>>) -> Self {
-        Self { receiver: Some(receiver) }
+        Self {
+            receiver: Some(receiver),
+        }
     }
 
     pub(crate) fn bind(&mut self, receiver: Arc<RwLock<EventReceiver>>) {
@@ -169,20 +178,21 @@ impl EventSender {
 
     pub(crate) fn send(&self, id: WindowId, ev: WindowEvent) {
         if let Some(r) = self.receiver.as_ref() {
-            r.try_write().unwrap_or_else(|_| panic!("deadlocked!")).recv(id, ev);
+            r.write().unwrap().recv(id, ev);
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct EventReceiver {
-    events: VecDeque<(WindowId, WindowEvent)>
-    //_no_send: PhantomData<*mut ()>
+    events: VecDeque<(WindowId, WindowEvent)>, //_no_send: PhantomData<*mut ()>
 }
 
 impl EventReceiver {
     pub(crate) fn new() -> Self {
-        Self { events: VecDeque::new() }
+        Self {
+            events: VecDeque::new(),
+        }
     }
 
     pub(crate) fn recv(&mut self, id: WindowId, ev: WindowEvent) {
@@ -202,8 +212,8 @@ pub struct EventLoop {
 
 impl EventLoop {
     pub fn new() -> Self {
-        Self { 
-            receiver: Arc::new(RwLock::new(EventReceiver::new())),  
+        Self {
+            receiver: Arc::new(RwLock::new(EventReceiver::new())),
             ids: HashSet::new(),
             _no_send_sync: Default::default(),
         }
@@ -229,15 +239,17 @@ impl EventLoop {
     }
 
     pub(crate) fn events(&mut self) -> VecDeque<(WindowId, WindowEvent)> {
-        let evs =  self.receiver.write().unwrap().events.clone();
+        let evs = self.receiver.write().unwrap().events.clone();
         self.receiver.write().unwrap().events.clear();
         evs
     }
 }
 
+pub(crate) trait EventLoopExt {
+    fn cycle_event(&mut self);
+}
+
 mod tests {
     #[test]
-    fn el_test() {
-        
-    }
+    fn el_test() {}
 }
