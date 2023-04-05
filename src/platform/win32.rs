@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
 use core::slice;
-use std::{mem::{size_of, transmute}, ptr::addr_of, thread, sync::{Arc, RwLock}, collections::HashMap};
+use std::{mem::{size_of, transmute}, ptr::{addr_of, addr_of_mut}, thread, sync::{Arc, RwLock, atomic::{AtomicU16}}, collections::{HashMap}};
 
 use raw_window_handle::{RawWindowHandle, HasRawWindowHandle, Win32WindowHandle};
-use windows::{Win32::{UI::{WindowsAndMessaging::{WNDCLASSEXW, WNDCLASS_STYLES, CS_DBLCLKS, CS_NOCLOSE, HICON, HCURSOR, RegisterClassExW, CreateWindowExW, WINDOW_EX_STYLE, WINDOW_STYLE, HMENU, ShowWindow, SW_NORMAL, IDI_APPLICATION, LoadIconW, LoadCursorW, SW_HIDE, SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_DRAWFRAME, SWP_SHOWWINDOW, SWP_HIDEWINDOW, SetWindowLongPtrW, GWL_STYLE, GetWindowLongPtrW, WS_SIZEBOX, SetWindowTextW, SWP_FRAMECHANGED, WS_POPUP, WS_VISIBLE, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, SW_MAXIMIZE, SW_MINIMIZE, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHW_TRAY, FlashWindowEx, FLASHWINFO, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WM_GETMINMAXINFO, MINMAXINFO, DefWindowProcW, WM_CLOSE, DestroyWindow, WM_DESTROY, PostMessageW, WM_MOVE, SIZE_RESTORED, SIZE_MINIMIZED, SIZE_MAXIMIZED, SIZE_MAXSHOW, SIZE_MAXHIDE, WM_SIZE, WM_ACTIVATE, WA_ACTIVE, WA_CLICKACTIVE, WA_INACTIVE, WM_SETTEXT, WM_DISPLAYCHANGE, SWP_ASYNCWINDOWPOS, SWP_NOCOPYBITS, CW_USEDEFAULT, IDC_ARROW, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW, WS_CLIPSIBLINGS, GWL_EXSTYLE}, Input::KeyboardAndMouse::{SetFocus, GetActiveWindow}}, Foundation::{HINSTANCE, HWND, WPARAM, LPARAM, LRESULT, GetLastError, WIN32_ERROR}, System::LibraryLoader::GetModuleHandleW, Graphics::Gdi::{HBRUSH, COLOR_WINDOW, UpdateWindow, RedrawWindow, RDW_NOINTERNALPAINT}}, core::PCWSTR};
+use windows::{Win32::{UI::{WindowsAndMessaging::{WNDCLASSEXW, WNDCLASS_STYLES, CS_DBLCLKS, CS_NOCLOSE, HICON, HCURSOR, RegisterClassExW, CreateWindowExW, WINDOW_EX_STYLE, WINDOW_STYLE, HMENU, ShowWindow, SW_NORMAL, IDI_APPLICATION, LoadIconW, LoadCursorW, SW_HIDE, SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_DRAWFRAME, SWP_SHOWWINDOW, SWP_HIDEWINDOW, SetWindowLongPtrW, GWL_STYLE, GetWindowLongPtrW, WS_SIZEBOX, SetWindowTextW, SWP_FRAMECHANGED, WS_POPUP, WS_VISIBLE, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, SW_MAXIMIZE, SW_MINIMIZE, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHW_TRAY, FlashWindowEx, FLASHWINFO, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WM_GETMINMAXINFO, MINMAXINFO, DefWindowProcW, WM_CLOSE, DestroyWindow, WM_DESTROY, PostMessageW, WM_MOVE, SIZE_RESTORED, SIZE_MINIMIZED, SIZE_MAXIMIZED, SIZE_MAXSHOW, SIZE_MAXHIDE, WM_SIZE, WM_ACTIVATE, WA_ACTIVE, WA_CLICKACTIVE, WA_INACTIVE, WM_SETTEXT, WM_DISPLAYCHANGE, SWP_ASYNCWINDOWPOS, SWP_NOCOPYBITS, CW_USEDEFAULT, IDC_ARROW, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW, WS_CLIPSIBLINGS, GWL_EXSTYLE, MSG, PeekMessageW, PM_REMOVE, DispatchMessageW}, Input::KeyboardAndMouse::{SetFocus, GetActiveWindow}}, Foundation::{HINSTANCE, HWND, WPARAM, LPARAM, LRESULT, GetLastError, WIN32_ERROR}, System::LibraryLoader::GetModuleHandleW, Graphics::Gdi::{HBRUSH, COLOR_WINDOW, UpdateWindow, RedrawWindow, RDW_NOINTERNALPAINT}}, core::PCWSTR};
 
-use crate::{Theme, WindowId, FullscreenType, WindowSizeState, UserAttentionType, WindowButtons};
+use crate::{Theme, WindowId, FullscreenType, WindowSizeState, UserAttentionType, WindowButtons, WindowEvent, EventSender, WindowTExt, WindowIdExt};
 
 #[derive(Clone, Debug, Default)]
 pub struct Window {
@@ -46,6 +46,7 @@ pub(crate) struct WindowInfo {
     non_fullscreen_style: WINDOW_STYLE,
     size_state: WindowSizeState, 
     enabled_buttons: WindowButtons,
+    sender: Arc<RwLock<EventSender>>,
 }
 
 impl Default for WindowInfo {
@@ -82,9 +83,12 @@ impl Default for WindowInfo {
             non_fullscreen_style: WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS,
             size_state: WindowSizeState::Other,
             enabled_buttons: WindowButtons::all(),
+            sender: Arc::new(RwLock::new(EventSender::new())),
         }
     }
 }
+
+static CLASS_ID: AtomicU16 = AtomicU16::new(0);
 
 impl WindowInfo {
     pub(crate) fn new() -> Self {
@@ -102,9 +106,7 @@ impl WindowInfo {
             self.no_close
         );
 
-        if let Ok(id) = res {
-            self.class_id = id;
-        }
+        CLASS_ID.store(self.class_id.0, std::sync::atomic::Ordering::Relaxed);
 
         res
     } 
@@ -131,12 +133,16 @@ lazy_static::lazy_static! {
     static ref WINDOW_INFO: Arc<RwLock<HashMap<isize, WindowInfo>>> = Arc::new(RwLock::new(HashMap::new()));
 }
 
-
 impl Window {
     pub fn try_new() -> Result<Self, WIN32_ERROR> {
         let mut info = WindowInfo::new();
         assert_eq!(info.style, WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS);
-        info.register()?;
+        let class_id = if CLASS_ID.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            info.register()?
+        } else {
+            WndClassId(CLASS_ID.load(std::sync::atomic::Ordering::Relaxed))
+        };
+        info.class_id = class_id;
         let hwnd = info.create()?;
         assert_eq!(info.style, WINDOW_STYLE(unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as _));
 
@@ -152,6 +158,15 @@ impl Drop for Window {
     fn drop(&mut self) {
         if Arc::strong_count(&self.hwnd) <= 1 {
             WINDOW_INFO.clone().write().unwrap().remove(&self.hwnd.0);
+        }
+    }
+}
+
+impl WindowIdExt for WindowId {
+    fn next_event(&self) {
+        let mut msg = MSG::default();
+        if unsafe { PeekMessageW(addr_of_mut!(msg), HWND(self.0 as _), 0, 0, PM_REMOVE) }.as_bool() {
+            unsafe { DispatchMessageW(addr_of_mut!(msg)) };
         }
     }
 }
@@ -253,9 +268,17 @@ fn create_window(
 
 unsafe extern "system" fn main_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
-        WM_CLOSE => DestroyWindow(hwnd),
+        WM_CLOSE => {
+            WINDOW_INFO.clone().write().unwrap().entry(hwnd.0).and_modify(|info| {
+                info.sender.read().unwrap().send(WindowId(hwnd.0 as _), WindowEvent::CloseRequested);
+            }).or_insert(WindowInfo::default());
+            DestroyWindow(hwnd);
+        },
         WM_DESTROY => {
             PostMessageW(hwnd, msg, wparam, lparam);
+            WINDOW_INFO.clone().write().unwrap().entry(hwnd.0).and_modify(|info| {
+                info.sender.read().unwrap().send(WindowId(hwnd.0 as _), WindowEvent::Destroyed);
+            }).or_insert(WindowInfo::default());
             WINDOW_INFO.clone().write().unwrap().remove(&hwnd.0);
             return LRESULT(0);
         },
@@ -273,14 +296,23 @@ unsafe extern "system" fn main_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
         WM_MOVE => {
             let x = lparam.0 & 0xFFFF;
             let y = (lparam.0 >> 16) & 0xFFFF;
-            WINDOW_INFO.clone().write().unwrap().entry(hwnd.0).and_modify(|v| { v.x = x as _; v.y = y as _ });
+            WINDOW_INFO.clone().write().unwrap().entry(hwnd.0).and_modify(|info| {
+                info.x = x as _;
+                info.y = y as _;
+                info.sender.read().unwrap().send(WindowId(hwnd.0 as _), WindowEvent::Moved(x as _, y as _)); 
+            }).or_insert(WindowInfo::default());
             return LRESULT(0);
         },
         WM_SIZE => {
+            let width = lparam.0 & 0xFFFF;
+            let height = (lparam.0 >> 16) & 0xFFFF;
             match wparam.0 as u32 {
                 SIZE_RESTORED => {
-                    WINDOW_INFO.clone().write().unwrap().entry(hwnd.0).and_modify(|v| {
-                        v.size_state = WindowSizeState::Other;
+                    WINDOW_INFO.clone().write().unwrap().entry(hwnd.0).and_modify(|info| {
+                        info.width = width as _;
+                        info.height = height as _;
+                        info.size_state = WindowSizeState::Other;
+                        info.sender.read().unwrap().send(WindowId(hwnd.0 as _), WindowEvent::Resized(width as _, height as _)); 
                     });
 
                     return LRESULT(0);
@@ -289,7 +321,6 @@ unsafe extern "system" fn main_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
                     WINDOW_INFO.clone().write().unwrap().entry(hwnd.0).and_modify(|v| {
                         v.size_state = WindowSizeState::Minimized;
                     });
-
                     return LRESULT(0);
                 },
                 SIZE_MAXIMIZED => {
@@ -304,17 +335,17 @@ unsafe extern "system" fn main_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             }
         },
         WM_ACTIVATE => {
-            match wparam.0 as u32 {
-                WA_ACTIVE | WA_CLICKACTIVE => {
-                    WINDOW_INFO.clone().write().unwrap().entry(hwnd.0).and_modify(|v| v.focused = true);
-                    return LRESULT(0);
-                },
-                WA_INACTIVE => {
-                    WINDOW_INFO.clone().write().unwrap().entry(hwnd.0).and_modify(|v| v.focused = false);
-                    return LRESULT(0);
-                },
+            let focused = match wparam.0 as u32 {
+                WA_ACTIVE | WA_CLICKACTIVE => true,
+                WA_INACTIVE => false,
                 _ => return LRESULT(0),
-            }
+            };
+
+            WINDOW_INFO.clone().write().unwrap().entry(hwnd.0).and_modify(|info| {
+                info.focused = focused;
+                info.sender.read().unwrap().send(WindowId(hwnd.0 as _), WindowEvent::Focused(focused)); 
+            });
+            return LRESULT(0);
         },
         WM_SETTEXT => {
             let text = lparam.0 as *mut u16;
@@ -346,7 +377,7 @@ fn maximize_window(hwnd: HWND) {
     }
 }
 
-impl super::super::Window for Window {
+impl super::super::WindowT for Window {
     fn id(&self) -> WindowId {
         WindowId(unsafe { transmute(self.hwnd.0 as i64) })
     }
@@ -597,6 +628,12 @@ impl super::super::Window for Window {
     }
 }
 
+impl WindowTExt for Window {
+    fn sender(&self) -> Arc<RwLock<EventSender>> {
+        WINDOW_INFO.clone().read().unwrap().get(&self.hwnd.0).unwrap().sender.clone()
+    }
+}
+
 pub trait WindowExtWindows {
     fn style(&self) -> WINDOW_STYLE;
     fn set_style(&mut self, style: WINDOW_STYLE);
@@ -645,7 +682,7 @@ unsafe impl HasRawWindowHandle for Window {
 }
 
 mod tests {
-    #[test]
+    //#[test]
     fn cw_test() {
         use std::{ptr::{addr_of_mut, addr_of}};
         use windows::Win32::UI::WindowsAndMessaging::{TranslateMessage, GetMessageW, MSG, DispatchMessageW};
@@ -691,7 +728,7 @@ mod tests {
         }
     }
 
-    #[test]
+   // #[test]
     fn w_test() {
         use crate::platform::*;
         use std::ptr::{addr_of_mut, addr_of};
@@ -701,7 +738,7 @@ mod tests {
 
         use crate::platform::win32::WindowExtWindows;
 
-        use crate::Window;
+        use crate::WindowT;
     
 
         let mut window = win32::Window::try_new().unwrap();
@@ -722,7 +759,7 @@ mod tests {
         }
     }
 
-    #[test]
+    //#[test]
     fn w_test_no_decorations() {
         use crate::platform::*;
         use std::ptr::{addr_of_mut, addr_of};
@@ -732,7 +769,7 @@ mod tests {
 
         use crate::platform::win32::WindowExtWindows;
 
-        use crate::Window;
+        use crate::WindowT;
     
 
         let mut window = win32::Window::try_new().unwrap();

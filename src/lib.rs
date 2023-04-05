@@ -1,12 +1,13 @@
-#![allow(clippy::bool_comparison)]
+#![allow(clippy::bool_comparison, dead_code)]
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, collections::{VecDeque, HashSet}, sync::{Arc, RwLock}};
 
 use bitflags::bitflags;
+use platform::{win32};
 
 pub mod platform;
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Hash, Default, PartialEq, Eq)]
 pub struct WindowId(pub u64);
 
 bitflags! {
@@ -47,7 +48,7 @@ pub enum Theme {
     Dark,
 }
 
-pub trait Window {
+pub trait WindowT {
     fn id(&self) -> WindowId;
     fn request_redraw(&mut self);
     fn width(&self) -> u32;
@@ -88,6 +89,155 @@ pub trait Window {
     fn set_theme(&mut self, theme: Theme);
 }
 
+pub trait WindowTExt {
+    fn sender(&self) -> Arc<RwLock<EventSender>>;
+}
+
+pub(crate) trait WindowIdExt {
+    fn next_event(&self);
+}
+
+pub enum Window {
+    WindowsWindow(win32::Window),
+}
+
+
+#[derive(Copy, Clone, Default, Debug)]
+pub struct KeyboardInput;
+
+bitflags! {
+    #[derive(Copy, Clone, Debug)]
+    #[non_exhaustive]
+    pub struct Modifiers: u16 {
+        const LCTRL = 0x0001;
+        const LSYS = 0x0002;
+        const LALT = 0x0004;
+        const LSHIFT = 0x0008;
+        const RSHIFT = 0x0010;
+        const RALT = 0x0020;
+        const RSYS = 0x0040;
+        const RCTRL = 0x0080;
+        const CAPSLOCK = 0x0100;
+    }
+}
+
+bitflags! {
+    #[derive(Copy, Clone, Debug)]
+    #[non_exhaustive]
+    pub struct MouseButtons: u8 {
+        const LCLICK = 0x01;
+        const RCLICK = 0x02;
+        const MCLICK = 0x04;
+        const BUTTON_4 = 0x08;
+        const BUTTON_5 = 0x10;
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
+pub enum WindowEvent {
+    Resized(u32, u32),
+    Moved(u32, u32),
+    CloseRequested,
+    Destroyed,
+    Focused(bool),
+    ThemeChanged(Theme),
+    KeyboardInput(KeyboardInput),
+    CursorMoved(f64, f64),
+    MouseInput(MouseButtons),
+    ModifiersChanged(Modifiers),
+    UnrecoverableError,
+}
+
+#[derive(Clone, Debug)]
+pub struct EventSender {
+    receiver: Option<Arc<RwLock<EventReceiver>>>
+}
+
+impl EventSender {
+    pub(crate) fn new() -> Self {
+        Self { receiver: None }
+    }
+
+    pub(crate) fn with_receiver(receiver: Arc<RwLock<EventReceiver>>) -> Self {
+        Self { receiver: Some(receiver) }
+    }
+
+    pub(crate) fn bind(&mut self, receiver: Arc<RwLock<EventReceiver>>) {
+        self.receiver = Some(receiver);
+    }
+
+    pub(crate) fn send(&self, id: WindowId, ev: WindowEvent) {
+        if let Some(r) = self.receiver.as_ref() {
+            r.try_write().unwrap_or_else(|_| panic!("deadlocked!")).recv(id, ev);
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EventReceiver {
+    events: VecDeque<(WindowId, WindowEvent)>
+    //_no_send: PhantomData<*mut ()>
+}
+
+impl EventReceiver {
+    pub(crate) fn new() -> Self {
+        Self { events: VecDeque::new() }
+    }
+
+    pub(crate) fn recv(&mut self, id: WindowId, ev: WindowEvent) {
+        dbg!(self.events.clone());
+        self.events.push_back((id, ev));
+    }
+}
+
+unsafe impl Sync for EventReceiver {}
+
+#[derive(Debug)]
 pub struct EventLoop {
+    receiver: Arc<RwLock<EventReceiver>>,
+    ids: HashSet<WindowId>,
     _no_send_sync: PhantomData<*mut ()>,
+}
+
+impl EventLoop {
+    pub fn new() -> Self {
+        Self { 
+            receiver: Arc::new(RwLock::new(EventReceiver::new())),  
+            ids: HashSet::new(),
+            _no_send_sync: Default::default(),
+        }
+    }
+
+    pub fn bind(&mut self, window: &mut (impl WindowT + WindowTExt)) {
+        self.ids.insert(window.id());
+        window.sender().write().unwrap().bind(self.receiver.clone());
+    }
+
+    pub fn next_event(&mut self) -> Option<(WindowId, WindowEvent)> {
+        let events = {
+            let receiver = self.receiver.read().unwrap();
+            receiver.events.clone()
+        };
+        if events.is_empty() {
+            for id in self.ids.clone() {
+                id.next_event();
+            }
+        }
+        let mut receiver = self.receiver.write().unwrap();
+        receiver.events.pop_front()
+    }
+
+    pub(crate) fn events(&mut self) -> VecDeque<(WindowId, WindowEvent)> {
+        let evs =  self.receiver.write().unwrap().events.clone();
+        self.receiver.write().unwrap().events.clear();
+        evs
+    }
+}
+
+mod tests {
+    #[test]
+    fn el_test() {
+        
+    }
 }
