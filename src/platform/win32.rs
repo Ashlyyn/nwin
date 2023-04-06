@@ -188,6 +188,38 @@ lazy_static::lazy_static! {
     static ref WINDOW_INFO: Arc<RwLock<HashMap<isize, WindowInfo>>> = Arc::new(RwLock::new(HashMap::new()));
 }
 
+macro_rules! info_modify {
+    ($hwnd:expr, $b:expr) => {
+        WINDOW_INFO.clone().write().unwrap().entry($hwnd).and_modify($b).or_insert(WindowInfo::default())
+    };
+    ($hwnd:expr, $b:expr, $def:expr) => {
+        WINDOW_INFO.clone().write().unwrap().entry($hwnd).and_modify($b).or_insert($def)
+    };
+}
+
+macro_rules! info_get {
+    ($hwnd:expr) => {
+        WINDOW_INFO.clone().write().unwrap().entry($hwnd).or_default()
+    };
+}
+
+macro_rules! info_remove {
+    ($hwnd:expr) => {
+        WINDOW_INFO.clone().write().unwrap().remove($hwnd)
+    };
+}
+
+macro_rules! send_ev {
+    ($hwnd:expr, $ev:expr) => {
+        info_modify!($hwnd, |info| {
+            info.sender
+                .write()
+                .unwrap()
+                .send(WindowId($hwnd as _), $ev);
+        });
+    };
+}
+
 impl Window {
     pub fn try_new() -> Result<Self, WIN32_ERROR> {
         let mut info = WindowInfo::new();
@@ -204,21 +236,10 @@ impl Window {
             WINDOW_STYLE(unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as _)
         );
 
-        WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(hwnd.0)
-            .and_modify(|v| *v = info.clone())
-            .or_insert(info);
+        info_modify!(hwnd.0, |v| *v = info.clone(), info);
+
         assert_eq!(
-            WINDOW_INFO
-                .clone()
-                .read()
-                .unwrap()
-                .get(&hwnd.0)
-                .unwrap()
-                .style,
+            info_get!(hwnd.0).style,
             WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS
         );
         Ok(Self {
@@ -230,7 +251,7 @@ impl Window {
 impl Drop for Window {
     fn drop(&mut self) {
         if Arc::strong_count(&self.hwnd) <= 1 {
-            WINDOW_INFO.clone().write().unwrap().remove(&self.hwnd.0);
+            info_remove!(&self.hwnd.0);
         }
     }
 }
@@ -672,73 +693,44 @@ unsafe extern "system" fn main_wnd_proc(
             .entry(hwnd.0)
             .or_insert(WindowInfo::default())
             .sender
-                    .read()
+                    .write()
                     .unwrap()
                     .send(WindowId(hwnd.0 as _), WindowEvent::Created); 
         }
         WM_CLOSE => {
-            WINDOW_INFO
-                .clone()
-                .write()
-                .unwrap()
-                .entry(hwnd.0)
-                .and_modify(|info| {
-                    info.sender
-                        .read()
-                        .unwrap()
-                        .send(WindowId(hwnd.0 as _), WindowEvent::CloseRequested);
-                })
-                .or_insert(WindowInfo::default());
+            send_ev!(hwnd.0, WindowEvent::CloseRequested);
             DestroyWindow(hwnd);
         }
         WM_DESTROY => {
             PostMessageW(hwnd, msg, wparam, lparam);
-            WINDOW_INFO
-                .clone()
-                .write()
-                .unwrap()
-                .entry(hwnd.0)
-                .and_modify(|info| {
-                    info.sender
-                        .read()
-                        .unwrap()
-                        .send(WindowId(hwnd.0 as _), WindowEvent::Destroyed);
-                })
-                .or_insert(WindowInfo::default());
-            WINDOW_INFO.clone().write().unwrap().remove(&hwnd.0);
+            send_ev!(hwnd.0, WindowEvent::Destroyed);
+            info_remove!(&hwnd.0);
             return LRESULT(0);
         }
         WM_GETMINMAXINFO => {
             let mmi = lparam.0 as *mut MINMAXINFO;
-            let lock = WINDOW_INFO.clone();
-            let mut info = lock.write().unwrap();
-            let entry = info.entry(hwnd.0).or_default();
-            (*mmi).ptMinTrackSize.x = entry.min_height;
-            (*mmi).ptMinTrackSize.y = entry.min_height;
-            (*mmi).ptMaxTrackSize.x = entry.max_width;
-            (*mmi).ptMaxTrackSize.y = entry.max_height;
+            let info = info_get!(hwnd.0).clone();
+            (*mmi).ptMinTrackSize.x = info.min_height;
+            (*mmi).ptMinTrackSize.y = info.min_height;
+            (*mmi).ptMaxTrackSize.x = info.max_width;
+            (*mmi).ptMaxTrackSize.y = info.max_height;
             return LRESULT(0);
         }
         WM_MOVE => {
             let x = lparam.0 & 0xFFFF;
             let y = (lparam.0 >> 16) & 0xFFFF;
-            WINDOW_INFO
-                .clone()
-                .write()
-                .unwrap()
-                .entry(hwnd.0)
-                .and_modify(|info| {
-                    info.x = x as _;
-                    info.y = y as _;
-                    info.sender.read().unwrap().send(
-                        WindowId(hwnd.0 as _),
-                        WindowEvent::Moved {
-                            x: x as _,
-                            y: y as _,
-                        },
-                    );
-                })
-                .or_insert(WindowInfo::default());
+
+            info_modify!(hwnd.0, |info| {
+                info.x = x as _;
+                info.y = y as _;
+                info.sender.write().unwrap().send(
+                    WindowId(hwnd.0 as _),
+                    WindowEvent::Moved {
+                        x: x as _,
+                        y: y as _,
+                    },
+                );
+            });
             return LRESULT(0);
         }
         WM_SIZE => {
@@ -746,46 +738,31 @@ unsafe extern "system" fn main_wnd_proc(
             let height = (lparam.0 >> 16) & 0xFFFF;
             match wparam.0 as u32 {
                 SIZE_RESTORED => {
-                    WINDOW_INFO
-                        .clone()
-                        .write()
-                        .unwrap()
-                        .entry(hwnd.0)
-                        .and_modify(|info| {
-                            info.width = width as _;
-                            info.height = height as _;
-                            info.size_state = WindowSizeState::Other;
-                            info.sender.read().unwrap().send(
-                                WindowId(hwnd.0 as _),
-                                WindowEvent::Resized {
-                                    width: width as _,
-                                    height: height as _,
-                                },
-                            );
-                        });
+                    info_modify!(hwnd.0, |info| {
+                        info.width = width as _;
+                        info.height = height as _;
+                        info.size_state = WindowSizeState::Other;
+                        info.sender.write().unwrap().send(
+                            WindowId(hwnd.0 as _),
+                            WindowEvent::Resized {
+                                width: width as _,
+                                height: height as _,
+                            },
+                        );
+                    });
 
                     return LRESULT(0);
                 }
                 SIZE_MINIMIZED => {
-                    WINDOW_INFO
-                        .clone()
-                        .write()
-                        .unwrap()
-                        .entry(hwnd.0)
-                        .and_modify(|v| {
-                            v.size_state = WindowSizeState::Minimized;
-                        });
+                    info_modify!(hwnd.0, |info| {
+                        info.size_state = WindowSizeState::Minimized;
+                    });
                     return LRESULT(0);
                 }
                 SIZE_MAXIMIZED => {
-                    WINDOW_INFO
-                        .clone()
-                        .write()
-                        .unwrap()
-                        .entry(hwnd.0)
-                        .and_modify(|v| {
-                            v.size_state = WindowSizeState::Maximized;
-                        });
+                    info_modify!(hwnd.0, |info| {
+                        info.size_state = WindowSizeState::Maximized;
+                    });
 
                     return LRESULT(0);
                 }
@@ -800,18 +777,11 @@ unsafe extern "system" fn main_wnd_proc(
                 _ => return LRESULT(0),
             };
 
-            WINDOW_INFO
-                .clone()
-                .write()
-                .unwrap()
-                .entry(hwnd.0)
-                .and_modify(|info| {
-                    info.focused = focused;
-                    info.sender
-                        .read()
-                        .unwrap()
-                        .send(WindowId(hwnd.0 as _), WindowEvent::Focused(focused));
-                });
+            info_modify!(hwnd.0, |info| {
+                info.focused = focused;
+            });
+            send_ev!(hwnd.0, WindowEvent::Focused(focused));
+
             return LRESULT(0);
         },
         WM_SETTEXT => {
@@ -822,12 +792,9 @@ unsafe extern "system" fn main_wnd_proc(
             }
             let v = slice::from_raw_parts(text, len);
             if let Ok(s) = String::from_utf16(v) {
-                WINDOW_INFO
-                    .clone()
-                    .write()
-                    .unwrap()
-                    .entry(hwnd.0)
-                    .and_modify(|v| v.title = s);
+                info_modify!(hwnd.0, |info| {
+                    info.title = s;
+                });
             };
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         }
@@ -840,13 +807,7 @@ unsafe extern "system" fn main_wnd_proc(
             let physical_scancode: Option<KeyboardScancode> = OemScancode(kpi.scancode).try_into().ok();
 
             if sys && (vk == VK_TAB || vk == VK_RETURN) {
-                let info = WINDOW_INFO
-                    .clone()
-                    .write()
-                    .unwrap()
-                    .get(&hwnd.0)
-                    .unwrap()
-                    .clone();
+                let info = info_get!(hwnd.0).clone();
                 let wparam = if vk == VK_RETURN {
                     if info.size_state == WindowSizeState::Maximized {
                         WPARAM(SC_RESTORE as _)
@@ -861,133 +822,99 @@ unsafe extern "system" fn main_wnd_proc(
             }
 
             if let Ok(k) = TryInto::<KeyboardScancode>::try_into(vk) {
-                WINDOW_INFO
-                    .clone()
-                    .write()
-                    .unwrap()
-                    .entry(hwnd.0)
-                    .and_modify(|v| {
-                        if !down {
-                            v.sender.clone().write().unwrap().send(
-                                WindowId(hwnd.0 as _),
-                                WindowEvent::KeyUp {
-                                    logical_scancode: k,
-                                    physical_scancode,
-                                },
-                            );
-                            return;
-                        }
+                info_modify!(hwnd.0, |info| {
+                    if !down {
+                        info.sender.clone().write().unwrap().send(
+                            WindowId(hwnd.0 as _),
+                            WindowEvent::KeyUp {
+                                logical_scancode: k,
+                                physical_scancode,
+                            },
+                        );
+                        return;
+                    }
 
-                        let c = unsafe { MapVirtualKeyW(vk.0 as _, MAPVK_VK_TO_CHAR) };
-                        let unshifted_char = std::char::decode_utf16([c as u16])
+                    let c = unsafe { MapVirtualKeyW(vk.0 as _, MAPVK_VK_TO_CHAR) };
+                    let unshifted_char = std::char::decode_utf16([c as u16])
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .iter()
+                        .copied()
+                        .nth(0);
+
+                    let mut keystate = [0u8; 256];
+                    let b = info.modifiers.contains(Modifiers::LSHIFT)
+                        || info.modifiers.contains(Modifiers::RSHIFT);
+                    let b = if info.modifiers.contains(Modifiers::CAPSLOCK) {
+                        !b
+                    } else {
+                        b
+                    };
+                    if b {
+                        keystate[0x10] = 0x80;
+                    }
+                    let mut buf = [0u16; 1];
+                    let res = unsafe {
+                        ToUnicode(
+                            (vk.0 & 0xFF) as _,
+                            (vk.0 & 0xFF) as _,
+                            Some(&keystate),
+                            &mut buf,
+                            0,
+                        )
+                    };
+                    let character = if res != 1 {
+                        None
+                    } else {
+                        std::char::decode_utf16(buf)
                             .flatten()
                             .collect::<Vec<_>>()
                             .iter()
                             .copied()
-                            .nth(0);
+                            .nth(0)
+                    };
 
-                        let mut keystate = [0u8; 256];
-                        let b = v.modifiers.contains(Modifiers::LSHIFT)
-                            || v.modifiers.contains(Modifiers::RSHIFT);
-                        let b = if v.modifiers.contains(Modifiers::CAPSLOCK) {
-                            !b
-                        } else {
-                            b
-                        };
-                        if b {
-                            keystate[0x10] = 0x80;
-                        }
-                        let mut buf = [0u16; 1];
-                        let res = unsafe {
-                            ToUnicode(
-                                (vk.0 & 0xFF) as _,
-                                (vk.0 & 0xFF) as _,
-                                Some(&keystate),
-                                &mut buf,
-                                0,
-                            )
-                        };
-                        let character = if res != 1 {
-                            None
-                        } else {
-                            std::char::decode_utf16(buf)
-                                .flatten()
-                                .collect::<Vec<_>>()
-                                .iter()
-                                .copied()
-                                .nth(0)
-                        };
-
-                        v.sender.clone().write().unwrap().send(
-                            WindowId(hwnd.0 as _),
-                            WindowEvent::KeyDown {
-                                logical_scancode: k,
-                                character,
-                                unshifted_char,
-                                physical_scancode,
-                            },
-                        )
-                    });
+                    info.sender.clone().write().unwrap().send(
+                        WindowId(hwnd.0 as _),
+                        WindowEvent::KeyDown {
+                            logical_scancode: k,
+                            character,
+                            unshifted_char,
+                            physical_scancode,
+                        },
+                    );
+                });
             }
 
             if let Ok(k) = TryInto::<MouseScancode>::try_into(vk) {
-                WINDOW_INFO
-                    .clone()
-                    .write()
-                    .unwrap()
-                    .entry(hwnd.0)
-                    .and_modify(|v| {
-                        v.sender
-                            .clone()
-                            .write()
-                            .unwrap()
-                            .send(WindowId(hwnd.0 as _), if down { WindowEvent::MouseButtonDown(k) } else { WindowEvent::MouseButtonUp(k) })
-                    });
+                send_ev!(hwnd.0, if down { WindowEvent::MouseButtonDown(k) } else { WindowEvent::MouseButtonUp(k) });
             }
 
             if let Some(k) = Modifiers::try_from_vk(vk, kpi.scancode) {
-                WINDOW_INFO
-                    .clone()
-                    .write()
-                    .unwrap()
-                    .entry(hwnd.0)
-                    .and_modify(|v| {
-                        if k == Modifiers::CAPSLOCK || k == Modifiers::NUMLOCK {
-                            if down {
-                                v.modifiers ^= k;
-                            } else{
+                info_modify!(hwnd.0, |info| {
+                    if k == Modifiers::CAPSLOCK || k == Modifiers::NUMLOCK {
+                        if down {
+                            info.modifiers ^= k;
+                        } else{
 
-                            }
-                        } else if down {
-                            v.modifiers |= k;
-                        } else if !down {
-                            v.modifiers &= !k;
                         }
+                    } else if down {
+                        info.modifiers |= k;
+                    } else if !down {
+                        info.modifiers &= !k;
+                    }
 
-                        v.sender.clone().write().unwrap().send(
-                            WindowId(hwnd.0 as _),
-                            WindowEvent::ModifiersChanged(v.modifiers),
-                        )
-                    })
-                    .or_insert(WindowInfo::default());
+                    info.sender.clone().write().unwrap().send(
+                        WindowId(hwnd.0 as _),
+                        WindowEvent::ModifiersChanged(info.modifiers),
+                    );
+                });
             }
-
             return LRESULT(0);
         },
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 & 0xFFFF0000) >> 16) as i16;
-            WINDOW_INFO
-                .clone()
-                .write()
-                .unwrap()
-                .entry(hwnd.0)
-                .and_modify(|v| {
-                    v.sender
-                        .clone()
-                        .write()
-                        .unwrap()
-                        .send(WindowId(hwnd.0 as _), WindowEvent::MouseWheelScroll(delta as _));
-                });
+            send_ev!(hwnd.0, WindowEvent::MouseWheelScroll(delta as _));
         }
         _ => return DefWindowProcW(hwnd, msg, wparam, lparam),
     };
@@ -995,15 +922,7 @@ unsafe extern "system" fn main_wnd_proc(
 }
 
 fn minimize_window(hwnd: HWND) {
-    if WINDOW_INFO
-        .clone()
-        .read()
-        .unwrap()
-        .get(&hwnd.0)
-        .unwrap()
-        .size_state
-        != WindowSizeState::Minimized
-    {
+    if info_get!(hwnd.0).size_state != WindowSizeState::Minimized {
         unsafe {
             ShowWindow(hwnd, SW_MINIMIZE);
         }
@@ -1011,15 +930,7 @@ fn minimize_window(hwnd: HWND) {
 }
 
 fn maximize_window(hwnd: HWND) {
-    if WINDOW_INFO
-        .clone()
-        .read()
-        .unwrap()
-        .get(&hwnd.0)
-        .unwrap()
-        .size_state
-        != WindowSizeState::Maximized
-    {
+    if info_get!(hwnd.0).size_state != WindowSizeState::Maximized {
         unsafe {
             ShowWindow(hwnd, SW_MAXIMIZE);
         }
@@ -1039,57 +950,30 @@ impl super::super::WindowT for Window {
         unsafe {
             SetFocus(HWND(self.hwnd.0));
         }
-        WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(self.hwnd.0)
-            .and_modify(|v| v.focused = true);
+
+        info_modify!(self.hwnd.0, |info| {
+            info.focused = true;
+        });
     }
 
     fn focused(&self) -> bool {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .focused
+        info_get!(self.hwnd.0).focused
     }
 
     fn width(&self) -> u32 {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .width as _
+        info_get!(self.hwnd.0).width as _
     }
 
     fn min_width(&self) -> u32 {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .min_width as _
+        info_get!(self.hwnd.0).min_width as _
     }
 
     fn max_width(&self) -> u32 {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .max_width as _
+        info_get!(self.hwnd.0).max_width as _
     }
 
     fn set_width(&mut self, width: u32) {
-        let lock = WINDOW_INFO.clone();
-        lock.write().unwrap().entry(self.hwnd.0).and_modify(|v| {
+        info_modify!(self.hwnd.0, |v| {
             v.width = width as _;
             let mut flags = SWP_NOACTIVATE;
             if v.has_frame {
@@ -1107,56 +991,31 @@ impl super::super::WindowT for Window {
     }
 
     fn set_min_width(&mut self, width: u32) {
-        WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(self.hwnd.0)
-            .and_modify(|v| v.min_width = width as _);
+        info_modify!(self.hwnd.0, |info| {
+            info.min_width = width as _;
+        });
     }
 
     fn set_max_width(&mut self, width: u32) {
-        WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(self.hwnd.0)
-            .and_modify(|v| v.max_width = width as _);
+        info_modify!(self.hwnd.0, |info| {
+            info.max_width = width as _;
+        });
     }
 
     fn height(&self) -> u32 {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .height as _
+        info_get!(self.hwnd.0).height as _
     }
 
     fn min_height(&self) -> u32 {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .min_height as _
+        info_get!(self.hwnd.0).min_height as _
     }
 
     fn max_height(&self) -> u32 {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .max_height as _
+        info_get!(self.hwnd.0).max_height as _
     }
 
     fn set_height(&mut self, height: u32) {
-        let lock = WINDOW_INFO.clone();
-        lock.write().unwrap().entry(self.hwnd.0).and_modify(|v| {
+        info_modify!(self.hwnd.0, |v| {
             v.height = height as _;
             let mut flags = SWP_NOACTIVATE;
             if v.has_frame {
@@ -1174,77 +1033,50 @@ impl super::super::WindowT for Window {
     }
 
     fn set_min_height(&mut self, height: u32) {
-        WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(self.hwnd.0)
-            .and_modify(|v| v.min_height = height as _);
+        info_modify!(self.hwnd.0, |info| {
+            info.min_height = height as _;
+        });
     }
 
     fn set_max_height(&mut self, height: u32) {
-        WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(self.hwnd.0)
-            .and_modify(|v| v.max_height = height as _);
+        info_modify!(self.hwnd.0, |info| {
+            info.max_height = height as _;
+        });
     }
 
     fn visible(&self) -> bool {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .visible
+        info_get!(self.hwnd.0).visible
     }
 
     fn show(&mut self) {
-        WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(self.hwnd.0)
-            .and_modify(|v| {
-                v.visible = true;
-                v.style |= WS_VISIBLE;
-            });
+        info_modify!(self.hwnd.0, |info| {
+            info.visible = true;
+            info.style |= WS_VISIBLE;
+        });
+
         unsafe {
             ShowWindow(*self.hwnd, SW_NORMAL);
         }
     }
 
     fn hide(&mut self) {
-        WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(self.hwnd.0)
-            .and_modify(|v| v.visible = false);
+        info_modify!(self.hwnd.0, |info| {
+            info.visible = false;
+            info.style &= !WS_VISIBLE;
+        });
         unsafe {
             ShowWindow(*self.hwnd, SW_HIDE);
         }
     }
 
     fn resizeable(&self) -> bool {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .resizeable
+        info_get!(self.hwnd.0).resizeable
     }
 
     fn set_resizeable(&mut self, resizeable: bool) {
-        WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(self.hwnd.0)
-            .and_modify(|v| v.resizeable = resizeable);
+        info_modify!(self.hwnd.0, |info| {
+            info.resizeable = resizeable;
+        });
         unsafe {
             SetWindowLongPtrW(
                 *self.hwnd,
@@ -1255,13 +1087,7 @@ impl super::super::WindowT for Window {
     }
 
     fn theme(&self) -> Theme {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .theme
+        info_get!(self.hwnd.0).theme
     }
 
     fn set_theme(&mut self, _theme: Theme) {
@@ -1269,54 +1095,24 @@ impl super::super::WindowT for Window {
     }
 
     fn title(&self) -> String {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .title
-            .clone()
+        info_get!(self.hwnd.0).title.clone()
     }
 
     fn fullscreen(&self) -> bool {
-        let fullscreen = WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .fullscreen;
+        let fullscreen = info_get!(self.hwnd.0).fullscreen;
         fullscreen == FullscreenType::Exclusive || fullscreen == FullscreenType::Borderless
     }
 
     fn fullscreen_type(&self) -> FullscreenType {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .fullscreen
+        info_get!(self.hwnd.0).fullscreen
     }
 
     fn set_fullscreen(&mut self, fullscreen: FullscreenType) {
-        if WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .fullscreen
-            == fullscreen
-        {
+        if info_get!(self.hwnd.0).fullscreen == fullscreen {
             return;
         }
 
-        let lock = WINDOW_INFO.clone();
-        let mut info = lock.write().unwrap();
-
-        info.entry(self.hwnd.0).and_modify(|v| {
+        info_modify!(self.hwnd.0, |v| {
             let mut flags = SWP_NOACTIVATE | SWP_FRAMECHANGED;
             if v.has_frame {
                 flags |= SWP_DRAWFRAME;
@@ -1365,36 +1161,15 @@ impl super::super::WindowT for Window {
     }
 
     fn maximized(&self) -> bool {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .size_state
-            == WindowSizeState::Maximized
+        info_get!(self.hwnd.0).size_state == WindowSizeState::Maximized
     }
 
     fn minimized(&self) -> bool {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .size_state
-            == WindowSizeState::Minimized
+        info_get!(self.hwnd.0).size_state == WindowSizeState::Minimized
     }
 
     fn normalized(&self) -> bool {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .size_state
-            == WindowSizeState::Other
+        info_get!(self.hwnd.0).size_state == WindowSizeState::Other
     }
 
     fn maximize(&mut self) {
@@ -1406,12 +1181,7 @@ impl super::super::WindowT for Window {
     }
 
     fn normalize(&mut self) {
-        let info = WINDOW_INFO
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .clone();
+        let info = info_get!(self.hwnd.0).clone();
         if info.size_state != WindowSizeState::Minimized {
             let mut flags = SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS | SWP_NOCOPYBITS;
             if info.has_frame {
@@ -1476,55 +1246,37 @@ impl super::super::WindowT for Window {
     }
 
     fn enabled_buttons(&self) -> WindowButtons {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .enabled_buttons
+        info_get!(self.hwnd.0).enabled_buttons
     }
 
     fn set_enabled_buttons(&mut self, buttons: WindowButtons) {
-        WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(self.hwnd.0)
-            .and_modify(|v| {
-                v.enabled_buttons = buttons;
-                let mut style = WINDOW_STYLE(0);
-                if buttons.contains(WindowButtons::MAXIMIZE) {
-                    style |= WS_MAXIMIZEBOX
-                };
-                if buttons.contains(WindowButtons::MINIMIZE) {
-                    style |= WS_MINIMIZEBOX
-                };
-                v.style &= !style;
+        info_modify!(self.hwnd.0, |info| {
+            info.enabled_buttons = buttons;
+            let mut style = WINDOW_STYLE(0);
+            if buttons.contains(WindowButtons::MAXIMIZE) {
+                style |= WS_MAXIMIZEBOX
+            };
+            if buttons.contains(WindowButtons::MINIMIZE) {
+                style |= WS_MINIMIZEBOX
+            };
+            info.style &= !style;
 
-                unsafe {
-                    SetWindowLongPtrW(*self.hwnd, GWL_STYLE, v.style.0 as _);
-                }
+            unsafe {
+                SetWindowLongPtrW(*self.hwnd, GWL_STYLE, info.style.0 as _);
+            }
 
-                if v.no_close == false && buttons.contains(WindowButtons::CLOSE) {
-                    return;
-                }
+            if info.no_close == false && buttons.contains(WindowButtons::CLOSE) {
+                return;
+            }
 
-                todo!()
-            });
+            todo!()
+        });
     }
 }
 
 impl WindowTExt for Window {
     fn sender(&self) -> Arc<RwLock<EventSender>> {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .sender
-            .clone()
+        info_get!(self.hwnd.0).sender.clone()
     }
 }
 
@@ -1537,30 +1289,25 @@ pub trait WindowExtWindows {
 
 impl WindowExtWindows for Window {
     fn style(&self) -> WINDOW_STYLE {
-        WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .style
+        info_get!(self.hwnd.0).style
     }
 
     fn set_style(&mut self, style: WINDOW_STYLE) {
-        let mut info = WINDOW_INFO.write().unwrap();
-        let info = info.get_mut(&self.hwnd.0).unwrap();
-        info.style = style | WS_CLIPSIBLINGS;
-        info.non_fullscreen_style = style | WS_CLIPSIBLINGS;
-        unsafe { SetWindowLongPtrW(*self.hwnd, GWL_STYLE, style.0 as _) };
-        unsafe { UpdateWindow(*self.hwnd) };
+        info_modify!(self.hwnd.0, |info| {
+            info.style = style | WS_CLIPSIBLINGS;
+            info.non_fullscreen_style = style | WS_CLIPSIBLINGS;
+            unsafe { SetWindowLongPtrW(*self.hwnd, GWL_STYLE, style.0 as _) };
+            unsafe { UpdateWindow(*self.hwnd) };
+        });
     }
 
     fn set_style_ex(&mut self, style_ex: WINDOW_EX_STYLE) {
-        let mut info = WINDOW_INFO.write().unwrap();
-        let info = info.get_mut(&self.hwnd.0).unwrap();
-        info.style_ex = style_ex;
-        unsafe { SetWindowLongPtrW(*self.hwnd, GWL_EXSTYLE, style_ex.0 as _) };
-        unsafe { UpdateWindow(*self.hwnd) };
+        info_modify!(self.hwnd.0, |info| {
+            info.style_ex = style_ex;
+            unsafe { SetWindowLongPtrW(*self.hwnd, GWL_EXSTYLE, style_ex.0 as _) };
+            unsafe { UpdateWindow(*self.hwnd) };
+        });
+        
     }
 
     fn set_title(&mut self, title: &str) {
@@ -1576,13 +1323,7 @@ impl WindowExtWindows for Window {
 unsafe impl HasRawWindowHandle for Window {
     fn raw_window_handle(&self) -> RawWindowHandle {
         let mut handle = Win32WindowHandle::empty();
-        let hinstance = WINDOW_INFO
-            .clone()
-            .read()
-            .unwrap()
-            .get(&self.hwnd.0)
-            .unwrap()
-            .hinstance;
+        let hinstance = info_get!(self.hwnd.0).hinstance;
         handle.hinstance = hinstance.0 as _;
         handle.hwnd = self.hwnd.0 as _;
         RawWindowHandle::Win32(handle)
