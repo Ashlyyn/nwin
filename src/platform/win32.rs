@@ -19,10 +19,10 @@ use windows::{
         UI::{
             Input::KeyboardAndMouse::{
                 GetActiveWindow, MapVirtualKeyW, SetFocus, ToUnicode, MAPVK_VK_TO_CHAR,
-                MAPVK_VSC_TO_VK_EX, VIRTUAL_KEY, VK_ADD, VK_BACK, VK_CAPITAL,
-                VK_CONTROL, VK_DECIMAL, VK_DELETE, VK_DIVIDE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1,
-                VK_F10, VK_F11, VK_F12, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9,
-                VK_HOME, VK_INSERT, VK_LBUTTON, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN,
+                MAPVK_VSC_TO_VK_EX, VIRTUAL_KEY, VK_ADD, VK_BACK, VK_CAPITAL, VK_CONTROL,
+                VK_DECIMAL, VK_DELETE, VK_DIVIDE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F10,
+                VK_F11, VK_F12, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME,
+                VK_INSERT, VK_LBUTTON, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN,
                 VK_MBUTTON, VK_MENU, VK_MULTIPLY, VK_NEXT, VK_NUMLOCK, VK_NUMPAD0, VK_NUMPAD1,
                 VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6, VK_NUMPAD7, VK_NUMPAD8,
                 VK_NUMPAD9, VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7,
@@ -43,10 +43,11 @@ use windows::{
                 SWP_DRAWFRAME, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOCOPYBITS,
                 SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_NORMAL, WA_ACTIVE,
                 WA_CLICKACTIVE, WA_INACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_CLOSE,
-                WM_DESTROY, WM_DISPLAYCHANGE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_MOVE,
-                WM_SETTEXT, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW,
-                WNDCLASS_STYLES, WS_CLIPSIBLINGS, WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
-                WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SIZEBOX, WS_VISIBLE, WM_CREATE, WM_MOUSEWHEEL,
+                WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP,
+                WM_MOUSEWHEEL, WM_MOVE, WM_SETTEXT, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN,
+                WM_SYSKEYUP, WNDCLASSEXW, WNDCLASS_STYLES, WS_CLIPSIBLINGS, WS_EX_APPWINDOW,
+                WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SIZEBOX,
+                WS_VISIBLE,
             },
         },
     },
@@ -161,7 +162,6 @@ impl WindowInfo {
         if let Ok(id) = res {
             CLASS_ID.store(id.0, std::sync::atomic::Ordering::Relaxed);
         }
-        
 
         res
     }
@@ -190,16 +190,33 @@ lazy_static::lazy_static! {
 
 macro_rules! info_modify {
     ($hwnd:expr, $b:expr) => {
-        WINDOW_INFO.clone().write().unwrap().entry($hwnd).and_modify($b).or_insert(WindowInfo::default())
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry($hwnd)
+            .and_modify($b)
+            .or_insert(WindowInfo::default())
     };
     ($hwnd:expr, $b:expr, $def:expr) => {
-        WINDOW_INFO.clone().write().unwrap().entry($hwnd).and_modify($b).or_insert($def)
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry($hwnd)
+            .and_modify($b)
+            .or_insert($def)
     };
 }
 
 macro_rules! info_get {
     ($hwnd:expr) => {
-        WINDOW_INFO.clone().write().unwrap().entry($hwnd).or_default()
+        WINDOW_INFO
+            .clone()
+            .write()
+            .unwrap()
+            .entry($hwnd)
+            .or_default()
     };
 }
 
@@ -212,10 +229,7 @@ macro_rules! info_remove {
 macro_rules! send_ev {
     ($hwnd:expr, $ev:expr) => {
         info_modify!($hwnd, |info| {
-            info.sender
-                .write()
-                .unwrap()
-                .send(WindowId($hwnd as _), $ev);
+            info.sender.write().unwrap().send(WindowId($hwnd as _), $ev);
         });
     };
 }
@@ -542,7 +556,7 @@ impl KeyPressInfo {
         let extended = i & 0x01000000 != 0;
         let scancode = if extended {
             scancode | 0xE000
-        } else { 
+        } else {
             scancode
         };
         let context_code = i & 0x10000000 != 0;
@@ -590,7 +604,7 @@ impl TryFrom<OemScancode> for KeyboardScancode {
             0x002D => Ok(Self::X),
             0x0015 => Ok(Self::Y),
             0x002C => Ok(Self::Z),
-            
+
             0x0002 => Ok(Self::Key1),
             0x0003 => Ok(Self::Key2),
             0x0004 => Ok(Self::Key3),
@@ -601,7 +615,7 @@ impl TryFrom<OemScancode> for KeyboardScancode {
             0x0009 => Ok(Self::Key8),
             0x000A => Ok(Self::Key9),
             0x000B => Ok(Self::Key0),
-            
+
             0x001C => Ok(Self::Enter),
             0x0001 => Ok(Self::Esc),
             0x000E => Ok(Self::Backspace),
@@ -645,7 +659,7 @@ impl TryFrom<OemScancode> for KeyboardScancode {
             0xE04B => Ok(Self::ArrowLeft),
             0xE050 => Ok(Self::ArrowDown),
             0xE048 => Ok(Self::ArrowUp),
-            
+
             0xE035 => Ok(Self::NumSlash),
             0x0037 => Ok(Self::NumAsterisk),
             0x004A => Ok(Self::NumHyphen),
@@ -673,7 +687,7 @@ impl TryFrom<OemScancode> for KeyboardScancode {
             0xE038 => Ok(Self::RAlt),
             0xE05C => Ok(Self::RSys),
 
-            _ => Err(())
+            _ => Err(()),
         }
     }
 }
@@ -687,15 +701,15 @@ unsafe extern "system" fn main_wnd_proc(
     match msg {
         WM_CREATE => {
             WINDOW_INFO
-            .clone()
-            .write()
-            .unwrap()
-            .entry(hwnd.0)
-            .or_insert(WindowInfo::default())
-            .sender
-                    .write()
-                    .unwrap()
-                    .send(WindowId(hwnd.0 as _), WindowEvent::Created); 
+                .clone()
+                .write()
+                .unwrap()
+                .entry(hwnd.0)
+                .or_insert(WindowInfo::default())
+                .sender
+                .write()
+                .unwrap()
+                .send(WindowId(hwnd.0 as _), WindowEvent::Created);
         }
         WM_CLOSE => {
             send_ev!(hwnd.0, WindowEvent::CloseRequested);
@@ -783,7 +797,7 @@ unsafe extern "system" fn main_wnd_proc(
             send_ev!(hwnd.0, WindowEvent::Focused(focused));
 
             return LRESULT(0);
-        },
+        }
         WM_SETTEXT => {
             let text = lparam.0 as *mut u16;
             let mut len = 1;
@@ -804,7 +818,8 @@ unsafe extern "system" fn main_wnd_proc(
             let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
             let kpi = KeyPressInfo::from_lparam(lparam);
             let vk = VIRTUAL_KEY(wparam.0 as _);
-            let physical_scancode: Option<KeyboardScancode> = OemScancode(kpi.scancode).try_into().ok();
+            let physical_scancode: Option<KeyboardScancode> =
+                OemScancode(kpi.scancode).try_into().ok();
 
             if sys && (vk == VK_TAB || vk == VK_RETURN) {
                 let info = info_get!(hwnd.0).clone();
@@ -887,7 +902,14 @@ unsafe extern "system" fn main_wnd_proc(
             }
 
             if let Ok(k) = TryInto::<MouseScancode>::try_into(vk) {
-                send_ev!(hwnd.0, if down { WindowEvent::MouseButtonDown(k) } else { WindowEvent::MouseButtonUp(k) });
+                send_ev!(
+                    hwnd.0,
+                    if down {
+                        WindowEvent::MouseButtonDown(k)
+                    } else {
+                        WindowEvent::MouseButtonUp(k)
+                    }
+                );
             }
 
             if let Some(k) = Modifiers::try_from_vk(vk, kpi.scancode) {
@@ -895,8 +917,7 @@ unsafe extern "system" fn main_wnd_proc(
                     if k == Modifiers::CAPSLOCK || k == Modifiers::NUMLOCK {
                         if down {
                             info.modifiers ^= k;
-                        } else{
-
+                        } else {
                         }
                     } else if down {
                         info.modifiers |= k;
@@ -911,7 +932,7 @@ unsafe extern "system" fn main_wnd_proc(
                 });
             }
             return LRESULT(0);
-        },
+        }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 & 0xFFFF0000) >> 16) as i16;
             send_ev!(hwnd.0, WindowEvent::MouseWheelScroll(delta as _));
@@ -1307,7 +1328,6 @@ impl WindowExtWindows for Window {
             unsafe { SetWindowLongPtrW(*self.hwnd, GWL_EXSTYLE, style_ex.0 as _) };
             unsafe { UpdateWindow(*self.hwnd) };
         });
-        
     }
 
     fn set_title(&mut self, title: &str) {

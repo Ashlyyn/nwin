@@ -301,7 +301,10 @@ pub struct EventSender {
 
 impl EventSender {
     pub(crate) fn new() -> Self {
-        Self { receiver: None, queued_evs: VecDeque::new() }
+        Self {
+            receiver: None,
+            queued_evs: VecDeque::new(),
+        }
     }
 
     pub(crate) fn with_receiver(receiver: Arc<RwLock<EventReceiver>>) -> Self {
