@@ -296,16 +296,18 @@ pub enum WindowEvent {
 #[derive(Clone, Debug)]
 pub struct EventSender {
     receiver: Option<Arc<RwLock<EventReceiver>>>,
+    queued_evs: VecDeque<WindowEvent>,
 }
 
 impl EventSender {
     pub(crate) fn new() -> Self {
-        Self { receiver: None }
+        Self { receiver: None, queued_evs: VecDeque::new() }
     }
 
     pub(crate) fn with_receiver(receiver: Arc<RwLock<EventReceiver>>) -> Self {
         Self {
             receiver: Some(receiver),
+            queued_evs: VecDeque::new(),
         }
     }
 
@@ -313,9 +315,14 @@ impl EventSender {
         self.receiver = Some(receiver);
     }
 
-    pub(crate) fn send(&self, id: WindowId, ev: WindowEvent) {
+    pub(crate) fn send(&mut self, id: WindowId, ev: WindowEvent) {
         if let Some(r) = self.receiver.as_ref() {
+            while let Some(ev) = self.queued_evs.pop_front() {
+                r.write().unwrap().recv(id, ev);
+            }
             r.write().unwrap().recv(id, ev);
+        } else {
+            self.queued_evs.push_back(ev);
         }
     }
 }
