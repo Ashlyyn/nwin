@@ -6,7 +6,10 @@ use std::{
     ffi::CString,
     mem::MaybeUninit,
     ptr::addr_of_mut,
-    sync::{Arc, RwLock, atomic::{AtomicU32, AtomicU64}},
+    sync::{
+        atomic::{AtomicU32, AtomicU64},
+        Arc, RwLock,
+    },
 };
 
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle, XlibWindowHandle};
@@ -25,11 +28,11 @@ use x11::xlib::{
     PropertyChangeMask, ResizeRedirectMask, RevertToParent, ShiftMask, SouthEastGravity,
     SouthGravity, SouthWestGravity, StaticGravity, StructureNotifyMask, SubstructureNotifyMask,
     SubstructureRedirectMask, VisibilityChangeMask, Visual, VisualAllMask, WestGravity, WhenMapped,
-    XAllocSizeHints, XCheckWindowEvent, XClientMessageEvent, XCreateWindow, XDefaultRootWindow,
-    XDefaultScreen, XEvent, XFree, XGetVisualInfo, XIconifyWindow, XInternAtom, XMapWindow,
-    XMatchVisualInfo, XOpenDisplay, XRaiseWindow, XResizeWindow, XRootWindow, XSelectInput,
-    XSendEvent, XSetInputFocus, XSetWMNormalHints, XSetWindowAttributes, XStoreName, XUnmapWindow,
-    XVisualInfo, XDestroyWindow, XCloseDisplay,
+    XAllocSizeHints, XCheckWindowEvent, XClientMessageEvent, XCloseDisplay, XCreateWindow,
+    XDefaultRootWindow, XDefaultScreen, XDestroyWindow, XEvent, XFree, XGetVisualInfo,
+    XIconifyWindow, XInternAtom, XMapWindow, XMatchVisualInfo, XOpenDisplay, XRaiseWindow,
+    XResizeWindow, XRootWindow, XSelectInput, XSendEvent, XSetInputFocus, XSetWMNormalHints,
+    XSetWindowAttributes, XStoreName, XUnmapWindow, XVisualInfo,
 };
 
 use crate::{
@@ -588,7 +591,8 @@ impl Window {
         info.parent = parent.unwrap_or(unsafe { XRootWindow(display, info.screen) });
         WINDOW_INFO.clone().write().unwrap().insert(id, info);
         let wm_delete_window_s = CString::new("WM_DELETE_WINDOW").unwrap();
-        let wm_delete_window = unsafe { XInternAtom(display, wm_delete_window_s.as_ptr(), x11::xlib::True) };
+        let wm_delete_window =
+            unsafe { XInternAtom(display, wm_delete_window_s.as_ptr(), x11::xlib::True) };
         WM_DELETE_WINDOW.store(wm_delete_window, std::sync::atomic::Ordering::Relaxed);
         Ok(w)
     }
@@ -1325,10 +1329,12 @@ impl WindowIdExt for WindowId {
                             .write()
                             .unwrap()
                             .send(WindowId(self.0), crate::WindowEvent::Focused(false));
-                    },
+                    }
                     ClientMessage => {
                         let cm = unsafe { ev.client_message };
-                        if cm.data.as_longs()[0] == WM_DELETE_WINDOW.load(std::sync::atomic::Ordering::Relaxed) as _ {
+                        if cm.data.as_longs()[0]
+                            == WM_DELETE_WINDOW.load(std::sync::atomic::Ordering::Relaxed) as _
+                        {
                             unsafe { XDestroyWindow(w.display, self.0) };
                             unsafe { XCloseDisplay(w.display) };
                         }
