@@ -1,4 +1,4 @@
-#![allow(clippy::bool_comparison, dead_code)]
+#![allow(clippy::bool_comparison, clippy::iter_nth_zero, dead_code)]
 
 use std::{
     collections::{HashSet, VecDeque},
@@ -101,17 +101,131 @@ pub(crate) trait WindowIdExt {
     fn next_event(&self);
 }
 
-pub enum Window {
-    //WindowsWindow(win32::Window),
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum KeyboardScancode {
+    Esc,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    PrtScSysRq,
+    ScrLk,
+    PauseBreak,
+
+    Tilde,
+    Key1,
+    Key2,
+    Key3,
+    Key4,
+    Key5,
+    Key6,
+    Key7,
+    Key8,
+    Key9,
+    Key0,
+    Hyphen,
+    Equals,
+    Backspace,
+    Insert,
+    Home,
+    PgUp,
+    NumLk,
+    NumSlash,
+    NumAsterisk,
+    NumHyphen,
+
+    Tab,
+    Q,
+    W,
+    E,
+    R,
+    T,
+    Y,
+    U,
+    I,
+    O,
+    P,
+    OpenBracket,
+    CloseBracket,
+    BackSlash,
+    Del,
+    End,
+    PgDn,
+    Num7,
+    Num8,
+    Num9,
+    NumPlus,
+
+    CapsLk,
+    A,
+    S,
+    D,
+    F,
+    G,
+    H,
+    J,
+    K,
+    L,
+    Semicolon,
+    Apostrophe,
+    Enter,
+    Num4,
+    Num5,
+    Num6,
+
+    LShift,
+    Z,
+    X,
+    C,
+    V,
+    B,
+    N,
+    M,
+    Comma,
+    Period,
+    ForwardSlash,
+    RShift,
+    ArrowUp,
+    Num1,
+    Num2,
+    Num3,
+    NumEnter,
+
+    LCtrl,
+    LSys,
+    LAlt,
+    Space,
+    RAlt,
+    RSys,
+    Fn,
+    RCtrl,
+    ArrowLeft,
+    ArrowDown,
+    ArrowRight,
+    Num0,
+    NumPeriod,
 }
 
-#[derive(Copy, Clone, Default, Debug)]
-pub struct KeyboardInput {
-    key_code: u64,
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MouseScancode {
+    LClick,
+    RClick,
+    MClick,
+    Button4,
+    Button5,
+    ButtonN(u8),
 }
 
 bitflags! {
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     #[non_exhaustive]
     pub struct Modifiers: u16 {
         const LCTRL = 0x0001;
@@ -123,6 +237,8 @@ bitflags! {
         const RSYS = 0x0040;
         const RCTRL = 0x0080;
         const CAPSLOCK = 0x0100;
+        const NUMLOCK = 0x0200;
+        const SCRLOCK = 0x0400;
     }
 }
 
@@ -141,17 +257,38 @@ bitflags! {
 #[derive(Copy, Clone, Debug)]
 #[non_exhaustive]
 pub enum WindowEvent {
-    Resized(u32, u32),
-    Moved(u32, u32),
+    Created,
+    Resized {
+        width: u32,
+        height: u32,
+    },
+    Moved {
+        x: u32,
+        y: u32,
+    },
     CloseRequested,
     Destroyed,
     Focused(bool),
     ThemeChanged(Theme),
-    KeyDown(KeyboardInput),
-    KeyUp(KeyboardInput),
-    CursorMoved(f64, f64),
-    MouseButtonDown(MouseButtons),
-    MouseButtonUp(MouseButtons),
+    #[non_exhaustive]
+    KeyDown {
+        logical_scancode: KeyboardScancode,
+        physical_scancode: Option<KeyboardScancode>,
+        character: Option<char>,
+        unshifted_char: Option<char>,
+    },
+    #[non_exhaustive]
+    KeyUp {
+        logical_scancode: KeyboardScancode,
+        physical_scancode: Option<KeyboardScancode>,
+    },
+    CursorMoved {
+        x: f64,
+        y: f64,
+    },
+    MouseButtonDown(MouseScancode),
+    MouseButtonUp(MouseScancode),
+    MouseWheelScroll(f32),
     ModifiersChanged(Modifiers),
     UnrecoverableError,
 }
@@ -196,7 +333,6 @@ impl EventReceiver {
     }
 
     pub(crate) fn recv(&mut self, id: WindowId, ev: WindowEvent) {
-        dbg!(self.events.clone());
         self.events.push_back((id, ev));
     }
 }
@@ -208,6 +344,12 @@ pub struct EventLoop {
     receiver: Arc<RwLock<EventReceiver>>,
     ids: HashSet<WindowId>,
     _no_send_sync: PhantomData<*mut ()>,
+}
+
+impl Default for EventLoop {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EventLoop {
@@ -245,11 +387,8 @@ impl EventLoop {
     }
 }
 
-pub(crate) trait EventLoopExt {
-    fn cycle_event(&mut self);
-}
-
-mod tests {
-    #[test]
-    fn el_test() {}
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        pub use platform::win32::Window;
+    }
 }
